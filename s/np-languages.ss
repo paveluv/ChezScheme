@@ -714,6 +714,8 @@
   (declare-primitive + value #t)
   (declare-primitive +/ovfl value #f)
   (declare-primitive +/carry value #f)
+  (declare-primitive add-bigits value #f) ; x86_64 only, writes memory
+  (declare-primitive add-bigits-adx value #f) ; same, with ADX
   (declare-primitive -/ovfl value #f)
   (declare-primitive -/eq value #f)
   (declare-primitive -/pos value #f)

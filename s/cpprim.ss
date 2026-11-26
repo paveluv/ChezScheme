@@ -2749,6 +2749,197 @@
     (define-inline 3 $bigpositive?
       [(e) (%type-check mask-signed-bignum type-positive-bignum
              ,(%mref ,e ,(constant bignum-type-disp)))])
+    ;; (#3%$bignum-add-magnitudes x y), for bignums x and y whose bigits
+    ;; are words: the bignum of |x| + |y| with the sign of x. This layer
+    ;; is the same for every machine: it finds the length of the result
+    ;; from the leading bigits, makes the result there, and carries into
+    ;; and copies the bigits of the longer operand above the shorter's.
+    ;; Under it, build-add-bigits adds the run of bigits the two share,
+    ;; with the machine's add-bigits instruction where it has one, else
+    ;; with a loop given here. Bigits are most significant first, and
+    ;; lengths and indexes are in bytes.
+    (let ()
+      (define bigit-bytes (constant bigit-bytes))
+      (define data-disp (constant bignum-data-disp))
+      (define all-ones -1)
+      ;; from a length in bytes to the length field of a header, and back
+      (define length-shift
+        (fx- (constant bignum-length-offset) (constant log2-ptr-bytes)))
+      (define (bigit-ref e-big e-index)
+        `(inline ,(make-info-load (bigit-type) #f) ,%load ,e-big ,e-index
+           (immediate ,data-disp)))
+      (define (bigit-set! e-big e-index e-val)
+        `(inline ,(make-info-load (bigit-type) #f) ,%store ,e-big ,e-index
+           (immediate ,data-disp) ,e-val))
+      (define (carry? e) `(if ,e (immediate 1) (immediate 0)))
+      ;; the loops a machine has for build-add-bigits, the first its
+      ;; default; adx is for x86_64 machines with ADX, which the caller
+      ;; knows
+      (define machine-loops
+        (constant-case architecture
+          [(x86_64) '(adc adx generic)]
+          [else '(generic)]))
+      ;; from this many bytes of bigits, add-bigits-adx is the faster
+      (define adx-from (fx* 16 bigit-bytes))
+      ;; the n bytes of bigits of z from zi are those of a from ai plus
+      ;; those of b from 0; n > 0; the value is the carry out
+      (define (build-add-bigits loop z zi a ai b n)
+        ;; addresses, not objects: nothing allocates between here and
+        ;; the end of the instruction
+        (define (address e-big e-index)
+          (%inline + ,e-big ,(%inline + ,e-index (immediate ,data-disp))))
+        (case loop
+          [(adc)
+           (%inline add-bigits ,(address z zi) ,(address a ai)
+              ,(address b `(immediate 0)) ,n)]
+          [(adx)
+           (bind #t (n)
+             `(if ,(%inline u< ,n (immediate ,adx-from))
+                  ,(%inline add-bigits ,(address z zi) ,(address a ai)
+                     ,(address b `(immediate 0)) ,n)
+                  ,(%inline add-bigits-adx ,(address z zi) ,(address a ai)
+                     ,(address b `(immediate 0)) ,n)))]
+          [else
+            (let ([i (make-assigned-tmp 'i 'uptr)]
+                  [c (make-assigned-tmp 'c 'uptr)]
+                  [av (make-tmp 'av 'uptr)]
+                  [s (make-tmp 's 'uptr)]
+                  [s+c (make-tmp 's+c 'uptr)]
+                  [Ltop (make-local-label 'Ltop)])
+              `(let ([,i ,n] [,c (immediate 0)])
+                 (label ,Ltop
+                   (if ,(%inline eq? ,i (immediate 0))
+                       ,c
+                       ,(%seq
+                          (set! ,i ,(%inline - ,i (immediate ,bigit-bytes)))
+                          (let ([,av ,(bigit-ref a (%inline + ,ai ,i))])
+                            (let ([,s ,(%inline + ,av ,(bigit-ref b i))])
+                              (let ([,s+c ,(%inline + ,s ,c)])
+                                ,(%seq
+                                   ,(bigit-set! z (%inline + ,zi ,i) s+c)
+                                   (set! ,c ,(%inline logor
+                                               ,(carry? (%inline u< ,s ,av))
+                                               ,(carry? (%inline u< ,s+c ,s))))
+                                   (goto ,Ltop))))))))))]))
+      ;; the bytes of bigit the result has above a's: one bigit when a
+      ;; carry leaves a's most significant bigit, else none; down from
+      ;; it, the first bigit whose sum is not all ones tells
+      (define (build-extra a an b d)
+        (let ([i (make-assigned-tmp 'i 'uptr)]
+              [av (make-tmp 'av 'uptr)] [s (make-tmp 's 'uptr)]
+              [La (make-local-label 'Lscan-a)]
+              [Lab (make-local-label 'Lscan-ab)])
+          (define (next L)
+            (%seq
+              (set! ,i ,(%inline + ,i (immediate ,bigit-bytes)))
+              (goto ,L)))
+          `(let ([,i (immediate 0)])
+             (label ,La
+               (if ,(%inline eq? ,i ,d)
+                   (label ,Lab
+                     (if ,(%inline eq? ,i ,an)
+                         (immediate 0)
+                         (let ([,av ,(bigit-ref a i)])
+                           (let ([,s ,(%inline + ,av
+                                        ,(bigit-ref b (%inline - ,i ,d)))])
+                             (if ,(%inline u< ,s ,av)
+                                 (immediate ,bigit-bytes)
+                                 (if ,(%inline eq? ,s (immediate ,all-ones))
+                                     ,(next Lab)
+                                     (immediate 0)))))))
+                   (if ,(%inline eq? ,(bigit-ref a i) (immediate ,all-ones))
+                       ,(next La)
+                       (immediate 0)))))))
+      ;; a bignum of zn bytes of bigits, and its header with hx's sign
+      (define (build-alloc zn)
+        `(alloc ,(make-info-alloc (constant type-typed-object) #f #f)
+           ,(%inline logand
+              ,(%inline + ,zn
+                 (immediate ,(fx+ (constant header-size-bignum)
+                               (fx- (constant byte-alignment) 1))))
+              (immediate ,(fx- (constant byte-alignment))))))
+      (define (build-header zn hx)
+        (%inline logor
+          ,(%inline sll ,zn (immediate ,length-shift))
+          ,(%inline logor
+             ,(%inline logand ,hx (immediate ,(constant mask-bignum-sign)))
+             (immediate ,(constant type-bignum)))))
+      ;; the d bytes of bigits of a above the run, into z from zoff, with
+      ;; the carry c while there is one, then copied; the value is z
+      (define (build-carry-copy z zoff a d c)
+        (let ([j (make-assigned-tmp 'j 'uptr)]
+              [k (make-assigned-tmp 'k 'uptr)]
+              [t (make-tmp 't 'uptr)]
+              [Lcarry (make-local-label 'Lcarry)]
+              [Lcopy (make-local-label 'Lcopy)])
+          (define (down!) `(set! ,j ,(%inline - ,j (immediate ,bigit-bytes))))
+          (define (z! e) (bigit-set! z (%inline + ,zoff ,j) e))
+          `(let ([,j ,d] [,k ,c])
+             (label ,Lcarry
+               (if ,(%inline eq? ,j (immediate 0))
+                   ,z
+                   (if ,(%inline eq? ,k (immediate 0))
+                       (label ,Lcopy
+                         (if ,(%inline eq? ,j (immediate 0))
+                             ,z
+                             ,(%seq ,(down!) ,(z! (bigit-ref a j))
+                                (goto ,Lcopy))))
+                       ,(%seq
+                          ,(down!)
+                          (let ([,t ,(%inline + ,(bigit-ref a j)
+                                       (immediate 1))])
+                            ,(%seq
+                               ,(z! t)
+                               (set! ,k ,(carry? (%inline eq? ,t
+                                                   (immediate 0))))
+                               (goto ,Lcarry))))))))))
+      (define (build-add-magnitudes loop e-x e-y)
+        (let ([hx (make-tmp 'hx 'uptr)]
+              [xn (make-tmp 'xn 'uptr)] [yn (make-tmp 'yn 'uptr)]
+              [a (make-tmp 'a)] [b (make-tmp 'b)]
+              [an (make-tmp 'an 'uptr)] [bn (make-tmp 'bn 'uptr)]
+              [d (make-tmp 'd 'uptr)]
+              [zoff (make-tmp 'zoff 'uptr)] [zn (make-tmp 'zn 'uptr)]
+              [z (make-tmp 'z)] [c (make-tmp 'c 'uptr)])
+          (define (bytes h)      ; a header's length in bytes
+            (%inline logand
+              ,(%inline srl ,h (immediate ,length-shift))
+              (immediate ,(fx- bigit-bytes))))
+          (bind #t (e-x e-y)
+            `(let ([,hx ,(%mref ,e-x ,(constant bignum-type-disp))])
+               (let ([,xn ,(bytes hx)]
+                     [,yn ,(bytes (%mref ,e-y ,(constant bignum-type-disp)))])
+                 (let ([,a (if ,(%inline u< ,xn ,yn) ,e-y ,e-x)]
+                       [,b (if ,(%inline u< ,xn ,yn) ,e-x ,e-y)]
+                       [,an (if ,(%inline u< ,xn ,yn) ,yn ,xn)]
+                       [,bn (if ,(%inline u< ,xn ,yn) ,xn ,yn)])
+                   (let ([,d ,(%inline - ,an ,bn)])
+                     (let ([,zoff ,(build-extra a an b d)])
+                       (let ([,zn ,(%inline + ,an ,zoff)])
+                         (let ([,z ,(build-alloc zn)])
+                           ,(%seq
+                              (set! ,(%mref ,z ,(constant bignum-type-disp))
+                                ,(build-header zn hx))
+                              (if ,(%inline eq? ,zoff (immediate 0))
+                                  ,(%constant svoid)
+                                  ,(bigit-set! z `(immediate 0)
+                                     `(immediate 1)))
+                              (let ([,c ,(build-add-bigits loop z
+                                           (%inline + ,zoff ,d) a d b bn)])
+                                ,(build-carry-copy z zoff a d c)))))))))))))
+      ;; (#3%$bignum-add-magnitudes x y [loop]), loop one of the
+      ;; machine's, quoted
+      (define-inline 3 $bignum-add-magnitudes
+        [(e-x e-y)
+         (and (fx= (constant bigit-bits) (constant ptr-bits))
+              (build-add-magnitudes (car machine-loops) e-x e-y))]
+        [(e-x e-y e-loop)
+         (and (fx= (constant bigit-bits) (constant ptr-bits))
+              (nanopass-case (L7 Expr) e-loop
+                [(quote ,d)
+                 (and (memq d machine-loops)
+                      (build-add-magnitudes d e-x e-y))]
+                [else #f]))]))
     (define-inline 3 csv7:record-field-accessible?
       [(e1 e2) (%seq ,e1 ,e2 ,(%constant strue))])
 

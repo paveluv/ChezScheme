@@ -1384,6 +1384,32 @@
     (unless (bignum? n) ($oops who "~s is not a bignum" n))
     (#3%$bignum-length n)))
 
+(define-who $bignum-add-magnitudes
+  ;; loop: one of the machine's loops for the compiler's sums, adc or adx
+  ;; on x86_64 (adx only where the machine has it), and generic anywhere
+  (case-lambda
+    [(x y)
+     (unless (bignum? x) ($oops who "~s is not a bignum" x))
+     (unless (bignum? y) ($oops who "~s is not a bignum" y))
+     (unless (fx= (constant bigit-bits) (constant ptr-bits))
+       ($oops who "bigits are not words"))
+     (#3%$bignum-add-magnitudes x y)]
+    [(x y loop)
+     (unless (bignum? x) ($oops who "~s is not a bignum" x))
+     (unless (bignum? y) ($oops who "~s is not a bignum" y))
+     (unless (fx= (constant bigit-bits) (constant ptr-bits))
+       ($oops who "bigits are not words"))
+     (case loop
+       [(generic) (#3%$bignum-add-magnitudes x y 'generic)]
+       [else
+        (constant-case architecture
+          [(x86_64)
+           (case loop
+             [(adc) (#3%$bignum-add-magnitudes x y 'adc)]
+             [(adx) (#3%$bignum-add-magnitudes x y 'adx)]
+             [else ($oops who "~s is not a loop of this machine" loop)])]
+          [else ($oops who "~s is not a loop of this machine" loop)])])]))
+
 (define string-length
    (lambda (s)
       (#2%string-length s)))

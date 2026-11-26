@@ -1908,6 +1908,7 @@
   ($assembly-output [flags single-valued])
   ($assert-continuation [sig [(ptr) -> (void)] [(ptr ptr) -> (void)]] [flags])
   ($as-time-goes-by [flags])
+  ($bignum-add-magnitudes [flags single-valued])
   ($bignum-length [flags single-valued pure true])
   ($bigpositive? [sig [(ptr) -> (boolean)]] [pred pbignum] [flags pure unrestricted]) ; no mifoldable due to fixnum
   ($breakhere [flags single-valued])
