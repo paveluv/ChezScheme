@@ -221,6 +221,16 @@ procedure. The inline code uses the same population-count instruction
 as \scheme{fxpopcount} when one is available, and its speed does not
 depend on the argument's sign.
 
+\subsection{Faster addition and subtraction of bignums (10.5.0)}
+
+The kernel adds and subtracts bignums a machine word at a time, which
+is two bigits at a time on a 64-bit machine. When the most significant
+bigits of the operands determine the length of the result, as they
+usually do, the result is computed in place instead of in a scratch
+bignum that is then copied. On 64-bit machines, sums and differences
+of large bignums take between a half and a quarter of the time they
+took.
+
 \subsection{Named Cost Center (10.4.0)}
 
 The procedure \scheme{make-cost-center} now

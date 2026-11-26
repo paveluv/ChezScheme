@@ -29,6 +29,8 @@ static ptr copy_normalize(ptr tc, const bigit *p, iptr len, IBOOL sign);
 static IBOOL abs_big_lt(ptr x, ptr y, iptr xl, iptr yl);
 static IBOOL abs_big_eq(ptr x, ptr y, iptr xl, iptr yl);
 static ptr big_negate(ptr tc, ptr x);
+static bigit add_bigits(bigit *zp, const bigit *xp, const bigit *yp, iptr xl, iptr yl);
+static void sub_bigits(bigit *zp, const bigit *xp, const bigit *yp, iptr xl, iptr yl);
 static ptr big_add_pos(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL sign);
 static ptr big_add_neg(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL sign);
 static ptr big_add(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL xs, IBOOL ys);
@@ -456,6 +458,39 @@ ptr Sinteger64(Sint64_t i) { /* convert arg to Scheme integer */
   *b = tmpb + (_tmp1_ > _tmp2_);\
   *diff = _tmp1_;}
 
+/* Sums and differences are made a uptr at a time, which is ptr_bigits
+   bigits at a time, most significant bigit first. */
+#if (ptr_bigits == 1)
+#define BIGITS_TO_UPTR(p) ((uptr)(p)[0])
+#define UPTR_TO_BIGITS(u, p) ((p)[0] = (bigit)(u))
+#elif (ptr_bigits == 2)
+#define BIGITS_TO_UPTR(p) (((uptr)(p)[0] << bigit_bits) | (p)[1])
+#define UPTR_TO_BIGITS(u, p)\
+  ((p)[0] = (bigit)((u) >> bigit_bits), (p)[1] = (bigit)(u))
+#endif
+
+/* the carry out of sum = a1 + a2 and sum1 = sum + k, for uptrs */
+#if defined(__clang__) && defined(__aarch64__)
+/* clang makes an add with carry of these two comparisons, and on AArch64
+   that is the faster form */
+#define ECARRYU(a1, sum, sum1, k) ((uptr)((sum) < (a1)) | ((sum1) < (sum)))
+#else
+/* the carry in goes through where the sum is all ones, and nothing else
+   of the carry out waits for it */
+#define ECARRYU(a1, sum, sum1, k)\
+  (((sum) == ~(uptr)0) ? (k) : (uptr)((sum) < (a1)))
+#endif
+
+/* EADDC for uptrs: a1, a2, and *k are uptrs, and sum points to ptr_bigits
+   bigits */
+#define EADDCU(a1, a2, sum, k) {\
+  uptr _tmp1_, _tmp2_, _tmp3_;\
+  _tmp1_ = (a1);\
+  _tmp2_ = _tmp1_ + (a2);\
+  _tmp3_ = _tmp2_ + *(k);\
+  *(k) = ECARRYU(_tmp1_, _tmp2_, _tmp3_, *(k));\
+  UPTR_TO_BIGITS(_tmp3_, sum);}
+
 /* bigit x bigit -> bigitbigit */
 #define EMUL(m1,m2,a1,low,high) {\
   bigitbigit _tmp_;\
@@ -534,46 +569,140 @@ ptr S_big_negate(ptr x) {
   return big_negate(get_thread_context(), x);
 }
 
+/* zp[0..xl-1] = xp[0..xl-1] + yp[0..yl-1], most significant bigit first;
+   the result is the carry out of zp[0]
+   assumptions: xl >= yl, and zp overlaps neither xp nor yp */
+static bigit add_bigits(bigit *zp, const bigit *xp, const bigit *yp, iptr xl, iptr yl) {
+  uptr k = 0;
+  iptr n;
+
+  xp += xl; yp += yl; zp += xl;
+
+#define STEP(i) EADDCU(BIGITS_TO_UPTR(xp+(i)*ptr_bigits),\
+                       BIGITS_TO_UPTR(yp+(i)*ptr_bigits),\
+                       zp+(i)*ptr_bigits, &k)
+  for (n = yl; n >= 8*ptr_bigits; n -= 8*ptr_bigits) {
+    xp -= 8*ptr_bigits; yp -= 8*ptr_bigits; zp -= 8*ptr_bigits;
+    STEP(7) STEP(6) STEP(5) STEP(4) STEP(3) STEP(2) STEP(1) STEP(0)
+  }
+  for (; n >= ptr_bigits; n -= ptr_bigits) {
+    xp -= ptr_bigits; yp -= ptr_bigits; zp -= ptr_bigits;
+    STEP(0)
+  }
+#undef STEP
+#if (ptr_bigits == 2)
+  if (n != 0) {
+    uptr t = (uptr)*--xp + *--yp + k;
+    *--zp = (bigit)t;
+    k = t >> bigit_bits;
+  }
+#endif
+
+  /* the rest of x, with the carry for as long as there is one */
+  for (n = xl - yl; k != 0 && n != 0; n -= 1) {
+    bigit t = *--xp + 1;
+    *--zp = t;
+    k = t == 0;
+  }
+  for (; n != 0; n -= 1)
+    *--zp = *--xp;
+
+  return (bigit)k;
+}
+
+/* zp[0..xl-1] = xp[0..xl-1] - yp[0..yl-1], most significant bigit first
+   assumptions: x >= y, and zp overlaps neither xp nor yp */
+static void sub_bigits(bigit *zp, const bigit *xp, const bigit *yp, iptr xl, iptr yl) {
+  /* x - y is x + ~y + 1, so this is an addition whose carry is 1 where
+     there is no borrow */
+  uptr k = 1;
+  iptr n;
+
+  xp += xl; yp += yl; zp += xl;
+
+#define STEP(i) EADDCU(BIGITS_TO_UPTR(xp+(i)*ptr_bigits),\
+                       ~BIGITS_TO_UPTR(yp+(i)*ptr_bigits),\
+                       zp+(i)*ptr_bigits, &k)
+  for (n = yl; n >= 8*ptr_bigits; n -= 8*ptr_bigits) {
+    xp -= 8*ptr_bigits; yp -= 8*ptr_bigits; zp -= 8*ptr_bigits;
+    STEP(7) STEP(6) STEP(5) STEP(4) STEP(3) STEP(2) STEP(1) STEP(0)
+  }
+  for (; n >= ptr_bigits; n -= ptr_bigits) {
+    xp -= ptr_bigits; yp -= ptr_bigits; zp -= ptr_bigits;
+    STEP(0)
+  }
+#undef STEP
+#if (ptr_bigits == 2)
+  if (n != 0) {
+    uptr t = (uptr)*--xp + (bigit)~*--yp + k;
+    *--zp = (bigit)t;
+    k = t >> bigit_bits;
+  }
+#endif
+
+  /* the rest of x, with the borrow for as long as there is one */
+  for (n = xl - yl; k == 0 && n != 0; n -= 1) {
+    bigit t = *--xp;
+    *--zp = t - 1;
+    k = t != 0;
+  }
+  for (; n != 0; n -= 1)
+    *--zp = *--xp;
+}
+
 /* assumptions: BIGLEN(x) >= BIGLEN(y) */
 static ptr big_add_pos(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL sign) {
-  iptr i;
-  bigit *xp, *yp, *zp;
-  bigit k = 0;
+  bigit *zp;
+
+  if (xl > ptr_bigits) {
+    /* The sum is too long for a fixnum and has xl or xl+1 bigits. The
+       most significant bigits tell which, unless a carry into them would
+       decide it, and then the sum is made where it stays. */
+    bigit x0 = BIGIT(x,0);
+    bigit top = x0 + (xl == yl ? BIGIT(y,0) : 0);
+
+    if (top < x0) {
+      ptr z = S_bignum(tc, xl+1, sign);
+      BIGIT(z,0) = add_bigits(&BIGIT(z,1), &BIGIT(x,0), &BIGIT(y,0), xl, yl);
+      return z;
+    } else if (top != 0 && top != bigit_mask) {
+      ptr z = S_bignum(tc, xl, sign);
+      (void)add_bigits(&BIGIT(z,0), &BIGIT(x,0), &BIGIT(y,0), xl, yl);
+      return z;
+    }
+  }
 
   PREPARE_BIGNUM(tc, W(tc),xl+1)
 
-  xp = &BIGIT(x,xl-1); yp = &BIGIT(y,yl-1); zp = &BIGIT(W(tc),xl);
-
-  for (i = yl; i-- > 0; )
-    EADDC(*xp--, *yp--, zp--, &k)
-  for (i = xl - yl; k != 0 && i-- > 0; )
-    EADDC(*xp--, 0, zp--, &k)
-  for (; i-- > 0; )
-    *zp-- = *xp--;
-
-  *zp = k;
+  zp = &BIGIT(W(tc),0);
+  *zp = add_bigits(zp+1, &BIGIT(x,0), &BIGIT(y,0), xl, yl);
 
   return copy_normalize(tc, zp,xl+1,sign);
 }
 
 /* assumptions: x >= y */
 static ptr big_add_neg(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL sign) {
-  iptr i;
-  bigit *xp, *yp, *zp;
-  bigit b = 0;
+  bigit *zp;
+
+  if (xl > ptr_bigits) {
+    /* The difference is too long for a fixnum and has xl bigits when its
+       most significant bigit is not zero after a borrow from it, and
+       then the difference is made where it stays. */
+    bigit top = BIGIT(x,0) - (xl == yl ? BIGIT(y,0) : 0);
+
+    if (top >= 2) {
+      ptr z = S_bignum(tc, xl, sign);
+      sub_bigits(&BIGIT(z,0), &BIGIT(x,0), &BIGIT(y,0), xl, yl);
+      return z;
+    }
+  }
 
   PREPARE_BIGNUM(tc, W(tc),xl)
 
-  xp = &BIGIT(x,xl-1); yp = &BIGIT(y,yl-1); zp = &BIGIT(W(tc),xl-1);
+  zp = &BIGIT(W(tc),0);
+  sub_bigits(zp, &BIGIT(x,0), &BIGIT(y,0), xl, yl);
 
-  for (i = yl; i-- > 0; )
-    ESUBC(*xp--, *yp--, zp--, &b)
-  for (i = xl-yl; b != 0 && i-- > 0; )
-    ESUBC(*xp--, 0, zp--, &b)
-  for (; i-- > 0; )
-    *zp-- = *xp--;
-
-  return copy_normalize(tc, zp+1,xl,sign);
+  return copy_normalize(tc, zp,xl,sign);
 }
 
 static ptr big_add(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL xs, IBOOL ys) {
