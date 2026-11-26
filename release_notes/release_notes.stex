@@ -231,6 +231,19 @@ bignum that is then copied. On 64-bit machines, sums and differences
 of large bignums take between a half and a quarter of the time they
 took.
 
+\subsection{Faster multiplication and division of bignums (10.5.0)}
+
+When the kernel is compiled by GCC or Clang for a 64-bit machine, it
+multiplies and divides bignums a machine word at a time, which is two
+bigits at a time, using the compiler's 128-bit integers. Division
+multiplies by a reciprocal of the divisor's most significant word
+instead of dividing for each word of the quotient. Products of
+bignums take about half the time they took, as do quotients and
+remainders except for the shortest operands, which are divided as
+before; a bignum divided by a fixnum of more than 32 bits takes about
+a quarter. With other compilers and on 32-bit machines, multiplication
+and division are unchanged.
+
 \subsection{Named Cost Center (10.4.0)}
 
 The procedure \scheme{make-cost-center} now

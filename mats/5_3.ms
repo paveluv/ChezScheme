@@ -1911,6 +1911,138 @@
           (and ($bas-check-signs x y) (loop (fx+ i 1))))))
  )
 
+(mat bignum-mul-div
+  ; * of exact integers against products made fourteen bits at a time
+  ; with fixnums, and quotient and remainder against those products: x is
+  ; q*y + r, r is smaller than y and has the sign of x, and every result
+  ; is normalized. The numbers are taken apart with bitwise-bit-field and
+  ; put together with ash and logor.
+  (begin
+    (define ($bmd-chunks m) ; m >= 0; least significant first
+      (let* ([n (fxquotient (fx+ (bitwise-length m) 13) 14)]
+             [v (make-vector n 0)])
+        (do ([i 0 (fx+ i 1)])
+            ((fx= i n) v)
+          (vector-set! v i
+            (bitwise-bit-field m (fx* 14 i) (fx* 14 (fx+ i 1)))))))
+    (define ($bmd-compose v)
+      (let loop ([i (fx- (vector-length v) 1)] [acc 0])
+        (if (fx< i 0)
+            acc
+            (loop (fx- i 1) (logor (ash acc 14) (vector-ref v i))))))
+    (define ($bmd-ref* x y) ; x, y >= 0
+      (let* ([a ($bmd-chunks x)] [b ($bmd-chunks y)]
+             [na (vector-length a)] [nb (vector-length b)]
+             [c (make-vector (fx+ na nb) 0)])
+        (do ([j 0 (fx+ j 1)])
+            ((fx= j nb))
+          (let ([bj (vector-ref b j)])
+            (let loop ([i 0] [k 0])
+              (if (fx= i na)
+                  (vector-set! c (fx+ i j) k)
+                  ; less than 2^28: a fixnum everywhere
+                  (let ([t (fx+ (fx* (vector-ref a i) bj)
+                                (vector-ref c (fx+ i j))
+                                k)])
+                    (vector-set! c (fx+ i j) (fxand t #x3fff))
+                    (loop (fx+ i 1) (fxsrl t 14)))))))
+        ($bmd-compose c)))
+    (define ($bmd-abs x) (if (negative? x) (- x) x))
+    (define ($bmd-normal? x) ; x is what its value is when made anew
+      (let* ([m ($bmd-compose ($bmd-chunks ($bmd-abs x)))]
+             [v (if (negative? x) (- m) m)])
+        (and (eqv? x v)
+             (eq? (fixnum? x) (fixnum? v))
+             (or (fixnum? x)
+                 (fx= (#%$bignum-length x) (#%$bignum-length v))))))
+    (define ($bmd-check* x y)
+      (let ([p (* x y)]
+            [ref ($bmd-ref* ($bmd-abs x) ($bmd-abs y))])
+        (unless (and ($bmd-normal? p)
+                     (eqv? ($bmd-abs p) ref)
+                     (or (eqv? p 0)
+                         (eq? (negative? p)
+                              (not (eq? (negative? x) (negative? y))))))
+          (errorf #f "(* #x~x #x~x) => #x~x" x y p))
+        #t))
+    (define ($bmd-check/ x y) ; y is not 0
+      (let ([q (quotient x y)] [r (remainder x y)])
+        (unless (and ($bmd-normal? q) ($bmd-normal? r)
+                     (< ($bmd-abs r) ($bmd-abs y))
+                     (or (eqv? r 0) (eq? (negative? r) (negative? x)))
+                     (or (eqv? q 0)
+                         (eq? (negative? q)
+                              (not (eq? (negative? x) (negative? y)))))
+                     (eqv? ($bmd-abs x)
+                           (+ ($bmd-ref* ($bmd-abs q) ($bmd-abs y))
+                              ($bmd-abs r))))
+          (errorf #f "(quotient #x~x #x~x) => #x~x, remainder #x~x"
+            x y q r))
+        #t))
+    (define ($bmd-check x y)
+      (and ($bmd-check* x y) ($bmd-check* (- x) y)
+           (or (eqv? y 0)
+               (and ($bmd-check/ x y) ($bmd-check/ (- x) y)
+                    ($bmd-check/ x (- y)) ($bmd-check/ (- x) (- y))))))
+    (define ($bmd-from-digits ds) ; 32 bits each, most significant first
+      (fold-left (lambda (acc d) (logor (ash acc 32) d)) 0 ds))
+    (define ($bmd-digit kind) ; digits at the edges of a division's estimates
+      (case (if (fx= kind 0) 5 (random 6))
+        [(0) #xffffffff]
+        [(1) 0]
+        [(2) (if (fx= (random 3) 0) 1 #xfffffffe)]
+        [(3) #x80000000]
+        [(4) (if (fx= (random 2) 0) #x7fffffff #x80000001)]
+        [else (random #x100000000)]))
+    (define ($bmd-number n kind) ; of n digits, the first not 0
+      (let ([ds (map (lambda (i) ($bmd-digit kind)) (iota n))])
+        ($bmd-from-digits
+          (if (eqv? (car ds) 0) (cons (fx+ 1 (random 3)) (cdr ds)) ds))))
+    #t)
+  ; around the fixnums and the squares that fit them
+  (let ([ns (list 0 1 2 3 10 23170 23171 #x3fffffff #x40000000
+              (most-positive-fixnum) (+ (most-positive-fixnum) 1)
+              (ash 1 31) (ash 1 32) (- (ash 1 32) 1) (ash 1 61) (ash 1 62)
+              (ash 1 63) (- (ash 1 63) 1) (ash 1 64) (- (ash 1 64) 1)
+              (+ (ash 1 64) 1) (ash 1 96) (- (ash 1 127) 1) (ash 1 128)
+              (- (ash 1 128) 1) (- (ash 1 192) 1))])
+    (andmap (lambda (x) (andmap (lambda (y) ($bmd-check x y)) ns)) ns))
+  ; every pair of lengths up to 14 digits of 32 bits, as the numbers come
+  (andmap
+    (lambda (xl)
+      (andmap
+        (lambda (yl)
+          (andmap
+            (lambda (kind)
+              ($bmd-check ($bmd-number xl kind) ($bmd-number yl kind)))
+            '(0 1 2 3)))
+        (cdr (iota 15))))
+    (cdr (iota 15)))
+  ; dividends put together from a quotient, a divisor and a remainder
+  ; with digits at the edges, where an estimated digit of the quotient
+  ; is one or two too large
+  (let loop ([i 0])
+    (or (fx= i 3000)
+        (let* ([y ($bmd-number (fx+ 1 (random 9)) (random 4))]
+               [q ($bmd-number (fx+ 1 (random (if (fx< i 200) 30 9)))
+                    (random 4))]
+               [r (case (random 4)
+                    [(0) 0]
+                    [(1) (- y 1)]
+                    [else (remainder ($bmd-number (fx+ 1 (random 9)) 1) y)])]
+               [x (+ (* q y) r)])
+          (and (eqv? (quotient x y) q)
+               (eqv? (remainder x y) r)
+               ($bmd-check x y)
+               (loop (fx+ i 1))))))
+  ; longer numbers, where * divides them up first
+  (let loop ([i 0])
+    (or (fx= i 60)
+        (let ([x ($bmd-number (fx+ 20 (random 120)) (random 4))]
+              [y ($bmd-number (fx+ 20 (random 120)) (random 4))])
+          (and ($bmd-check x y) (loop (fx+ i 1))))))
+ )
+
 (mat *
     (error? (* 'a))
     (error? (* 'a 3))

@@ -491,6 +491,50 @@ ptr Sinteger64(Sint64_t i) { /* convert arg to Scheme integer */
   *(k) = ECARRYU(_tmp1_, _tmp2_, _tmp3_, *(k));\
   UPTR_TO_BIGITS(_tmp3_, sum);}
 
+/* Multiplication and division go a uptr at a time where there is an
+   unsigned integer twice as wide as a uptr to multiply into: with GCC
+   and clang on a 64-bit machine. Elsewhere they go a bigit at a time. */
+#if (ptr_bigits == 2) && defined(__SIZEOF_INT128__) && !defined(_MSC_VER)
+typedef unsigned __int128 uptruptr;
+#define UPTRUPTR
+
+/* uptr x uptr + uptr + uptr -> uptruptr, which cannot overflow */
+#define EMULU(m1, m2, a1, a2, low, high) {\
+  uptruptr _tmp_ = (uptruptr)(m1) * (m2) + (a1) + (a2);\
+  *(low) = (uptr)_tmp_;\
+  *(high) = (uptr)(_tmp_ >> ptr_bits);}
+
+/* the number of zero bits in front of the first one bit of a uptr that
+   is not zero */
+#define ELEADZU(u) __builtin_clzll((unsigned long long)(u))
+
+/* the reciprocal of d that EDIVU wants: floor((B^2 - 1) / d) - B, for B
+   = 2^ptr_bits and d with its most significant bit set */
+#define ERECIPU(d)\
+  ((uptr)(((((uptruptr)~(d)) << ptr_bits) | ~(uptr)0) / (d)))
+
+/* uptruptr / uptr -> uptr quotient and remainder, without a division:
+   Moller and Granlund, "Improved Division by Invariant Integers", for
+   high < d, d with its most significant bit set, and v = ERECIPU(d) */
+#define EDIVU(high, low, d, v, quo, rem) {\
+  uptr _u1_ = (high), _u0_ = (low), _d_ = (d), _q1_, _q0_, _r_;\
+  uptruptr _tmp_ =\
+    (uptruptr)(v) * _u1_ + (((uptruptr)_u1_ << ptr_bits) | _u0_);\
+  _q1_ = (uptr)(_tmp_ >> ptr_bits) + 1;\
+  _q0_ = (uptr)_tmp_;\
+  _r_ = _u0_ - _q1_ * _d_;\
+  if (_r_ > _q0_) { _q1_ -= 1; _r_ += _d_; }\
+  if (_r_ >= _d_) { _q1_ += 1; _r_ -= _d_; }\
+  *(quo) = _q1_;\
+  *(rem) = _r_;}
+
+static void lsh_bigits(bigit *zp, iptr zl, const bigit *xp, iptr xl, INT shft);
+static void rsh_bigits(bigit *xp, iptr xl, INT shft);
+static void big_uptr_trunc(ptr tc, ptr x, uptr d, iptr xl, IBOOL qs, IBOOL rs, ptr *q, ptr *r);
+static void big_uptrs_trunc(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL qs, IBOOL rs, ptr *q, ptr *r);
+static uptr quotient_uptr(ptr tc, bigit *xp, const bigit *yp, iptr yn, uptr v);
+#endif
+
 /* bigit x bigit -> bigitbigit */
 #define EMUL(m1,m2,a1,low,high) {\
   bigitbigit _tmp_;\
@@ -773,6 +817,52 @@ multiplication
 */
 
 static ptr big_mul(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL sign) {
+#ifdef UPTRUPTR
+  /* xn and yn uptrs, from the least significant end; the most
+     significant uptr of an odd number of bigits is one bigit */
+  iptr xn = (xl + 1) >> 1, yn = (yl + 1) >> 1, zl = 2 * (xn + yn), i, j;
+  const bigit *xe = &BIGIT(x,xl), *ye = &BIGIT(y,yl);
+  bigit *zp, *ze;
+
+  PREPARE_BIGNUM(tc, W(tc),zl)
+  zp = &BIGIT(W(tc),0);
+
+  /* account for nested loop: */
+  USE_TRAP_FUEL(tc, xl * yl);
+
+  /* x times uptr d of y, with what is there already (ADDEND) */
+#define ROW(ADDEND)\
+  for (i = xl; i >= 2; i -= 2) {\
+    xq -= 2; zq -= 2;\
+    EMULU(BIGITS_TO_UPTR(xq), d, ADDEND, k, &low, &k)\
+    UPTR_TO_BIGITS(low, zq);\
+  }\
+  if (i != 0) {\
+    zq -= 2;\
+    EMULU((uptr)BIGIT(x,0), d, ADDEND, k, &low, &k)\
+    UPTR_TO_BIGITS(low, zq);\
+  }
+
+  for (j = 0, ze = zp + zl; j < yn; j += 1, ze -= 2) {
+    uptr d = (2*j+2 <= yl) ? BIGITS_TO_UPTR(ye-2*j-2) : (uptr)BIGIT(y,0);
+    const bigit *xq = xe;
+    bigit *zq = ze;
+    uptr k = 0, low;
+
+    if (j == 0) {
+      ROW(0)
+    } else if (d != 0) {
+      ROW(BIGITS_TO_UPTR(zq))
+    } else
+      zq -= 2*xn;
+    /* no earlier uptr of y reached this far */
+    zq -= 2;
+    UPTR_TO_BIGITS(k, zq);
+  }
+#undef ROW
+
+  return copy_normalize(tc, zp,zl,sign);
+#else
   iptr xi, yi;
   bigit *xp, *yp, *zp, *zpa;
   bigit k, k1, prod;
@@ -796,6 +886,7 @@ static ptr big_mul(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL sign) {
     }
 
   return copy_normalize(tc, &BIGIT(W(tc),0),xl+yl,sign);
+#endif
 }
 
 /* SHORTRANGE is -floor(sqrt(most_positive_fixnum))..floor(sqrt(most_positive_fixnum)).
@@ -904,11 +995,234 @@ void S_trunc_rem(ptr tc, ptr origx, ptr y, ptr *q, ptr *r) {
   if (xl < yl) {
     if (q != (ptr *)NULL) *q = FIX(0);
     if (r != (ptr *)NULL) *r = origx;
-  } else if (yl == 1) /* must have two bigits for full algorithm */
+    return;
+  }
+
+#ifdef UPTRUPTR
+  /* A uptr at a time where that is faster. It costs a reciprocal to
+     start with, so it is not for one bigit and a short x, where a
+     hardware division for each bigit of x is faster, and not for a
+     quotient of three bigits or fewer. */
+  if (yl == 2 || (yl == 1 && xl >= 12)) {
+    uptr d = (yl == 1) ? (uptr)BIGIT(y,0) : BIGITS_TO_UPTR(&BIGIT(y,0));
+    big_uptr_trunc(tc, x, d, xl, xs^ys, xs, q, r);
+    return;
+  } else if (yl >= 3 && xl - yl >= 3) {
+    big_uptrs_trunc(tc, x, y, xl, yl, xs^ys, xs, q, r);
+    return;
+  }
+#endif
+
+  if (yl == 1) /* must have two bigits for full algorithm */
     big_short_trunc(tc, x, BIGIT(y,0), xl, xs^ys, xs, q, r);
   else
     big_trunc(tc, x, y, xl, yl, xs^ys, xs, q, r);
 }
+
+#ifdef UPTRUPTR
+/* zp[0..zl-1] = xp[0..xl-1] shifted left by shft bits, most significant
+   bigit first
+   assumptions: 0 <= shft < 2*bigit_bits, and the result fits */
+static void lsh_bigits(bigit *zp, iptr zl, const bigit *xp, iptr xl, INT shft) {
+  const bigit *xe = xp + xl;
+  bigit *ze = zp + zl;
+  bigit k = 0;
+  iptr i;
+
+  if (shft >= bigit_bits) {
+    *--ze = 0;
+    shft -= bigit_bits;
+  }
+  if (shft == 0) {
+    for (i = xl; i-- > 0; ) *--ze = *--xe;
+  } else {
+    for (i = xl; i-- > 0; ) {
+      bigit b = *--xe;
+      *--ze = (b << shft) | k;
+      k = b >> (bigit_bits - shft);
+    }
+  }
+  if (ze != zp) {
+    *--ze = k;
+    while (ze != zp) *--ze = 0;
+  }
+}
+
+/* xp[0..xl-1] is shifted right by shft bits, most significant bigit first
+   assumptions: 0 <= shft < 2*bigit_bits */
+static void rsh_bigits(bigit *xp, iptr xl, INT shft) {
+  bigit k = 0;
+  iptr i;
+
+  if (shft >= bigit_bits) {
+    for (i = xl; --i > 0; ) xp[i] = xp[i-1];
+    if (xl > 0) xp[0] = 0;
+    shft -= bigit_bits;
+  }
+  if (shft != 0) {
+    for (i = 0; i < xl; i += 1) {
+      bigit b = xp[i];
+      xp[i] = (b >> shft) | k;
+      k = b << (bigit_bits - shft);
+    }
+  }
+}
+
+/* x is divided by the uptr d, which is not zero. x and d are shifted
+   left as they are used, so that the most significant bit of d is set. */
+static void big_uptr_trunc(ptr tc, ptr x, uptr d, iptr xl, IBOOL qs, IBOOL rs, ptr *q, ptr *r) {
+  iptr xn = (xl + 1) >> 1, i;
+  const bigit *xp = &BIGIT(x,0);
+  bigit *zp;
+  uptr a, k, v;
+  INT shft;
+
+  PREPARE_BIGNUM(tc, W(tc),2*xn)
+  zp = &BIGIT(W(tc),0);
+
+  shft = ELEADZU(d);
+  d <<= shft;
+  v = ERECIPU(d);
+
+  /* a is the uptr of x at hand, the first of them one bigit if xl is
+     odd; k is what is left over from the uptrs before it, at first
+     the bits of a shifted out */
+  if (xl & 1) {
+    a = xp[0]; xp += 1;
+  } else {
+    a = BIGITS_TO_UPTR(xp); xp += 2;
+  }
+  k = (a >> 1) >> (ptr_bits - 1 - shft);
+  for (i = 1; i <= xn; i += 1) {
+    uptr next, quo;
+
+    if (i < xn) {
+      next = BIGITS_TO_UPTR(xp); xp += 2;
+    } else
+      next = 0;
+    EDIVU(k, (a << shft) | ((next >> 1) >> (ptr_bits - 1 - shft)), d, v,
+          &quo, &k)
+    UPTR_TO_BIGITS(quo, zp);
+    zp += 2;
+    a = next;
+  }
+
+  if (q != (ptr *)NULL) *q = copy_normalize(tc, &BIGIT(W(tc),0),2*xn,qs);
+  if (r != (ptr *)NULL) {
+    bigit rem[ptr_bigits];
+
+    k >>= shft;
+    UPTR_TO_BIGITS(k, rem);
+    *r = copy_normalize(tc, rem,ptr_bigits,rs);
+  }
+}
+
+/* Knuth's algorithm D with uptrs for digits
+   assumptions: xl >= yl > ptr_bigits */
+static void big_uptrs_trunc(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL qs, IBOOL rs, ptr *q, ptr *r) {
+  /* un uptrs of x shifted left, yn of y, and qn of the quotient */
+  iptr yn = (yl + 1) >> 1, un = ((xl + 1) >> 1) + 1, qn = un - yn, i;
+  bigit *up, *vp, *zp = (bigit *)NULL;
+  uptr v;
+  INT shft;
+
+  PREPARE_BIGNUM(tc, U(tc), 2*un)
+  PREPARE_BIGNUM(tc, V(tc), 2*yn)
+  up = &BIGIT(U(tc),0); vp = &BIGIT(V(tc),0);
+
+  /* shift x and y left so that the most significant bit of y's most
+     significant uptr is set, which takes a bigit more if yl is odd */
+  shft = ELEADZU((yl & 1) ? (uptr)BIGIT(y,0) : BIGITS_TO_UPTR(&BIGIT(y,0)));
+  lsh_bigits(up, 2*un, &BIGIT(x,0), xl, shft);
+  lsh_bigits(vp, 2*yn, &BIGIT(y,0), yl, shft);
+  v = ERECIPU(BIGITS_TO_UPTR(vp));
+
+  if (q != (ptr *)NULL) {
+    PREPARE_BIGNUM(tc, W(tc),2*qn)
+    zp = &BIGIT(W(tc),0);
+  }
+  for (i = qn; i-- > 0; up += 2) {
+    uptr quo = quotient_uptr(tc, up, vp, yn, v);
+
+    if (q != (ptr *)NULL) {
+      UPTR_TO_BIGITS(quo, zp);
+      zp += 2;
+    }
+  }
+  if (q != (ptr *)NULL) *q = copy_normalize(tc, &BIGIT(W(tc),0),2*qn,qs);
+
+  if (r != (ptr *)NULL) {
+   /* unnormalize the remainder */
+    rsh_bigits(up, 2*yn, shft);
+    *r = copy_normalize(tc, up,2*yn,rs);
+  }
+}
+
+/* the next uptr of the quotient, from the yn+1 uptrs at xp and the yn
+   uptrs at yp, whose reciprocal for EDIVU is v; what is left over
+   replaces the uptrs at xp
+   assumptions: yn >= 2 */
+static uptr quotient_uptr(ptr tc, bigit *xp, const bigit *yp, iptr yn, uptr v) {
+  uptr x2 = BIGITS_TO_UPTR(xp), x1 = BIGITS_TO_UPTR(xp+2);
+  uptr x0 = BIGITS_TO_UPTR(xp+4);
+  uptr y1 = BIGITS_TO_UPTR(yp), y0 = BIGITS_TO_UPTR(yp+2);
+  uptr quo, rem, k, b;
+  IBOOL over;
+  const bigit *p2;
+  bigit *p1;
+  iptr i;
+
+  /* this function is called in loops, so use fuel every time */
+  USE_TRAP_FUEL(tc, 4*yn);
+
+  /* estimate from the first two uptrs by the first of y, corrected
+     with the next of each; over is set once rem is past a uptr */
+  if (x2 == y1) {
+    quo = ~(uptr)0;
+    rem = x1 + y1;
+    over = rem < y1;
+  } else {
+    EDIVU(x2, x1, y1, v, &quo, &rem)
+    over = 0;
+  }
+  while (!over
+         && (uptruptr)quo * y0 > (((uptruptr)rem << ptr_bits) | x0)) {
+    quo -= 1;
+    rem += y1;
+    over = rem < y1;
+  }
+
+  /* multiply and subtract */
+  p1 = xp + 2*yn; p2 = yp + 2*yn - 2;
+  for (i = yn, k = 0, b = 0; i-- > 0; p1 -= 2, p2 -= 2) {
+    uptr prod, s1, d1, d2;
+
+    EMULU(BIGITS_TO_UPTR(p2), quo, k, 0, &prod, &k)
+    s1 = BIGITS_TO_UPTR(p1);
+    d1 = s1 - prod;
+    d2 = d1 - b;
+    b = (d1 > s1) | (d2 > d1);
+    UPTR_TO_BIGITS(d2, p1);
+  }
+  {
+    uptr s1 = BIGITS_TO_UPTR(p1), d1 = s1 - k, d2 = d1 - b;
+
+    b = (d1 > s1) | (d2 > d1);
+    UPTR_TO_BIGITS(d2, p1);
+  }
+
+  if (b != 0) {
+    /* one too many: add y back */
+    p1 = xp + 2*yn; p2 = yp + 2*yn - 2;
+    for (i = yn, k = 0; i-- > 0; p1 -= 2, p2 -= 2)
+      EADDCU(BIGITS_TO_UPTR(p1), BIGITS_TO_UPTR(p2), p1, &k)
+    EADDCU(BIGITS_TO_UPTR(p1), 0, p1, &k)
+    quo -= 1;
+  }
+
+  return quo;
+}
+#endif /* UPTRUPTR */
 
 /* sparc C compiler barfs w/o full declaration */
 static void big_short_trunc(ptr tc, ptr x, bigit s, iptr xl, IBOOL qs, IBOOL rs, ptr *q, ptr *r) {
