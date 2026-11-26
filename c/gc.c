@@ -312,6 +312,7 @@ static uptr count_root_bytes;
  * min_tg: minimum target generation.  max_tg == 0 ? min_tg == 0 : min_tg > 0 && min_tg <= max_tg;
  * max_tg: maximum target generation.  max_tg == max_cg || max_tg == max_cg + 1.
  * Objects in generation g are collected into generation MIN(max_tg, MAX(min_tg, g+1)).
+ * In each of these, static_generation counts as S_G.max_nonstatic_generation + 1.
  */
 #if defined(MAX_CG) && defined(MIN_TG) && defined(MAX_TG)
 #else
@@ -325,7 +326,8 @@ static IGEN MAX_CG, MIN_TG, MAX_TG;
 #else
 # define TARGET_GENERATION(si) si->generation
 FORCEINLINE IGEN compute_target_generation(IGEN g) {
-  return g == MAX_TG ? g : g < MIN_TG ? MIN_TG : g + 1;
+  /* as in INCRGEN, the generation after the maximum nonstatic one is the static one */
+  return g == MAX_TG ? g : g < MIN_TG ? MIN_TG : g == S_G.max_nonstatic_generation ? static_generation : g + 1;
 }
 #endif
 

@@ -186,8 +186,6 @@ If present, \var{min-tg} must be a nonnegative fixnum or the symbol
 \scheme{static} and no greater than \var{max-tg}, again treating
 \scheme{static} as having the value one greater than the maximum
 nonstatic generation.
-Unless \var{max-cg} is the same as \var{cg}, \var{min-tg} must also
-be greater than \var{cg}.
 If \var{min-tg} is not present (but \var{cg} is), it defaults to
 the same value as \var{max-tg}.
 

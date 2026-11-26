@@ -3093,6 +3093,20 @@ in fasl files does not generally make sense.
 %-----------------------------------------------------------------------------
 \section{Bug Fixes}\label{section:bugfixes}
 
+\subsection{Repair \scheme{collect} into the static generation with a minimum target (10.5.0)}
+
+A call to \scheme{collect} with the maximum nonstatic generation, a
+minimum target generation other than \scheme{static}, and
+\scheme{static} as the maximum target generation, such as
+\scheme{(collect 4 1 'static)} when \scheme{collect-maximum-generation}
+is 4, moved the objects of the maximum nonstatic generation into a
+generation above it that the collector otherwise never visits, instead
+of into the static generation. A younger object stored into one of
+those objects was not tracked, so a later collection could move it and
+leave the older object with a stale reference. Those objects now go to
+the static generation, since \scheme{static} counts as one more than
+the maximum nonstatic generation.
+
 \subsection{Compiler loop on negative \scheme{list-ref} index (10.5.0)}
 
 Compiling a call to \scheme{list-ref} or \scheme{list-tail} with a

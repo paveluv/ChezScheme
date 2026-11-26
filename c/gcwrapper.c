@@ -1318,7 +1318,9 @@ ptr S_do_gc(IGEN max_cg, IGEN min_tg, IGEN max_tg, ptr count_roots) {
 }
 
 ptr S_gc(ptr tc, IGEN max_cg, IGEN min_tg, IGEN max_tg, ptr count_roots) {
-  if (min_tg == static_generation
+  /* use the counting variant whenever objects can move into the static
+     generation, since no later collection visits them to count them */
+  if (max_tg == static_generation
       || S_G.enable_object_counts || S_G.enable_object_backreferences
       || (count_roots != Sfalse)) {
     if (S_G.enable_object_backreferences) min_tg = max_tg;

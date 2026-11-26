@@ -5687,6 +5687,27 @@ evaluating module init
               (unless (< (- bm-2 bm-0) n) (errorf 'oops6 "bm-0 = ~s, bm-1 = ~s, bm-2 = ~s" bm-0 bm-1 bm-2))
               (parameterize ([print-vector-length #t]) (pretty-print v))
               #t))))))
+  ; `static` counts as one more than the maximum nonstatic generation, so
+  ; that generation goes to the static one whatever the minimum target;
+  ; check that it does, that it is counted there, and that a young object
+  ; stored into it is still tracked
+  (let ()
+    (define (static-vector-bytes)
+      (let ([a (assq 'vector (object-counts))])
+        (cond [(and a (assq 'static (cdr a))) => cddr] [else 0])))
+    (define (try min-tg)
+      (with-interrupts-disabled
+        (let* ([v (make-vector 20000 #f)] [n (compute-size v)])
+          (collect (collect-maximum-generation) (collect-maximum-generation))
+          (let ([b0 (bytes-allocated 'static)] [c0 (static-vector-bytes)])
+            (collect (collect-maximum-generation) min-tg 'static)
+            (and (>= (- (bytes-allocated 'static) b0) n)
+                 (>= (- (static-vector-bytes) c0) n)
+                 (let ([s (make-string 10 #\a)])
+                   (vector-set! v 0 s)
+                   (collect 0 1)
+                   (eq? (vector-ref v 0) s)))))))
+    (and (try 1) (try (collect-maximum-generation))))
   (parameterize ([collect-maximum-generation 4]
                  [collect-generation-radix 2]
                  [collect-trip-bytes (expt 2 20)]
