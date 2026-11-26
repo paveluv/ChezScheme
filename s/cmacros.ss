@@ -963,7 +963,7 @@
 (define-constant iptr maximum-bignum-length
   (min (- (expt 2 (fx- (constant ptr-bits) (constant bignum-length-offset))) 1)
        (constant most-positive-fixnum)))
-(define-constant bigit-bits                32)
+; bigit-bits is set in the machine's ".def" file or in "default.def"
 (define-constant bigit-bytes               (/ (constant bigit-bits) 8))
 
 ; vector length field (high bits) + immutability is stored with type
@@ -1329,7 +1329,8 @@
                            (bigit .
                              ,(constant-case bigit-bits
                                 [(16) 'unsigned-16]
-                                [(32) 'unsigned-32]))
+                                [(32) 'unsigned-32]
+                                [(64) 'unsigned-64]))
                            (string-char .
                              ,(constant-case string-char-bits
                                 [(32) 'unsigned-32]))))])

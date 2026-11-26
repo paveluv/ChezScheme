@@ -221,6 +221,24 @@ procedure. The inline code uses the same population-count instruction
 as \scheme{fxpopcount} when one is available, and its speed does not
 depend on the argument's sign.
 
+\subsection{64-bit bigits on 64-bit machine types (10.5.0)}
+
+The digits of a bignum, its bigits, are 64 bits wide instead of 32 on
+the x86\_64, AArch64, RISC-V, and LoongArch machine types other than
+the Windows ones. The kernel's bignum arithmetic is the same code,
+compiled for the wider bigit with the 128-bit integer type of GCC and
+Clang holding the product of two bigits, so it takes half as many
+steps to add or subtract and a quarter as many to multiply or divide.
+On those machine types, sums and differences of large bignums take
+about half the time they took, products and quotients of large bignums
+a third of the time or less, and a large bignum divided by a fixnum
+about two thirds. Bigits remain 32 bits wide on the 32-bit machine
+types, for portable bytecode, and on Windows, where the kernel may be
+compiled by a compiler that has no 128-bit integer type. The fasl
+format still holds a bignum as 32-bit digits, so fasl data and object
+files are the same as before and can still be read on any machine
+type.
+
 \subsection{Named Cost Center (10.4.0)}
 
 The procedure \scheme{make-cost-center} now

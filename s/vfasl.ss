@@ -409,7 +409,8 @@
   (case-lambda
    [(bv i bigit)
     (constant-case bigit-bytes
-      [(4) (bytevector-u32-set! bv i bigit (constant native-endianness))])]
+      [(4) (bytevector-u32-set! bv i bigit (constant native-endianness))]
+      [(8) (bytevector-u64-set! bv i bigit (constant native-endianness))])]
    [(p delta bigit vfi)
     (let-values ([(bv offset) (vptr->bytevector+offset p delta vfi)])
       (set-bigit! bv offset bigit))]))
@@ -484,7 +485,8 @@
     (cond
       [(fx= i (vector-length vuptr))
        (if (eqv? sign 1) (- v) v)]
-      [else (loop (bitwise-ior (bitwise-arithmetic-shift v (constant bigit-bits))
+      ; a fasl large integer's digits are 32 bits
+      [else (loop (bitwise-ior (bitwise-arithmetic-shift v 32)
                                    (vector-ref vuptr i))
                   (fx+ i 1))])))
 

@@ -1,5 +1,6 @@
 (define-constant architecture 'arm64)
 (define-constant ptr-bits 64)
+(define-constant bigit-bits 64)
 
 (define-constant asm-arg-reg-max 14)
 (define-constant asm-arg-reg-cnt 3)

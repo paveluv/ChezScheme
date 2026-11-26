@@ -62,7 +62,8 @@
  *
  *        -> {small-integer}<iptr>
  *
- *        -> {large-integer}<byte sign><uptr n><uptr bigit1>...<uptr bigitn>
+ *        -> {large-integer}<byte sign><uptr n><uptr digit1>...<uptr digitn>
+ *           where each digit is 32 bits, whatever bigit_bits is
  *
  *        -> {ratum}<fasl numerator><fasl denominator>
  *
@@ -1105,12 +1106,16 @@ static void faslin(ptr tc, ptr *x, ptr t, ptr *pstrbuf, faslFile f) {
             *x = Sinteger(iptrin(f));
             return;
         case fasl_type_large_integer: {
-            IBOOL sign; iptr n; ptr t; bigit *p;
+            IBOOL sign; iptr n; ptr t; bigit *p, b;
             sign = bytein(f);
             n = sizein(f);
-            t = S_bignum(tc, n, sign);
+            t = S_bignum(tc, (n * 32 + bigit_bits - 1) / bigit_bits, sign);
             p = &BIGIT(t, 0);
-            while (--n >= 0) *p++ = (bigit)uptrin(f);
+           /* 32-bit digits, the first of them the leftover of a bigit */
+            for (b = 0; n-- > 0; ) {
+                b = (b << 16 << 16) | (bigit)uptrin(f);
+                if ((n * 32) % bigit_bits == 0) { *p++ = b; b = 0; }
+            }
             *x = S_normalize_bignum(t);
             return;
         }

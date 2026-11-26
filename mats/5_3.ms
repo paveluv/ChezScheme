@@ -1757,6 +1757,353 @@
     (test-cp0-expansion cfl~= '(- +2.2i -3.7+5.3i) 3.7-3.1i)
  )
 
+(mat bignum-add-sub
+  ; + and - of exact integers against sums and differences made sixteen
+  ; bits at a time with fixnums. The numbers are taken apart with
+  ; bitwise-bit-field and put together with ash and logor, so the
+  ; reference shares nothing with the kernel's addition.
+  (begin
+    (define ($bas-chunks m) ; m >= 0; least significant first
+      (let loop ([i (fx- (fxquotient (fx+ (bitwise-length m) 15) 16) 1)]
+                 [ls '()])
+        (if (fx< i 0)
+            ls
+            (loop (fx- i 1)
+              (cons (bitwise-bit-field m (fx* 16 i) (fx* 16 (fx+ i 1)))
+                    ls)))))
+    (define ($bas-compose ls)
+      (let loop ([ls (reverse ls)] [acc 0])
+        (if (null? ls)
+            acc
+            (loop (cdr ls) (logor (ash acc 16) (car ls))))))
+    (define ($bas-mag+ a b)
+      (let loop ([a a] [b b] [k 0])
+        (if (and (null? a) (null? b))
+            (if (fx= k 0) '() (list k))
+            (let ([s (fx+ (if (null? a) 0 (car a))
+                          (if (null? b) 0 (car b))
+                          k)])
+              (cons (fxand s #xffff)
+                    (loop (if (null? a) a (cdr a))
+                          (if (null? b) b (cdr b))
+                          (fxsrl s 16)))))))
+    (define ($bas-mag- a b) ; a >= b
+      (let loop ([a a] [b b] [k 0])
+        (if (null? a)
+            '()
+            (let ([d (fx- (car a) (if (null? b) 0 (car b)) k)])
+              (cons (fxand d #xffff)
+                    (loop (cdr a)
+                          (if (null? b) b (cdr b))
+                          (if (fx< d 0) 1 0)))))))
+    (define ($bas-ref+ x y)
+      (let ([sx (negative? x)] [sy (negative? y)]
+            [mx (if (negative? x) (- x) x)]
+            [my (if (negative? y) (- y) y)])
+        (define (signed neg? m) (if neg? (- m) m))
+        (cond
+          [(eq? sx sy)
+           (signed sx ($bas-compose ($bas-mag+ ($bas-chunks mx)
+                                               ($bas-chunks my))))]
+          [(< mx my)
+           (signed sy ($bas-compose ($bas-mag- ($bas-chunks my)
+                                               ($bas-chunks mx))))]
+          [else
+           (signed sx ($bas-compose ($bas-mag- ($bas-chunks mx)
+                                               ($bas-chunks my))))])))
+    (define ($bas-same? r ref) ; equal, and normalized alike
+      (and (eqv? r ref)
+           (eq? (fixnum? r) (fixnum? ref))
+           (eq? (bignum? r) (bignum? ref))
+           (or (fixnum? r)
+               (fx= (#%$bignum-length r) (#%$bignum-length ref)))
+           (string=? (number->string r 16) (number->string ref 16))))
+    (define ($bas-check x y)
+      (let ([s (+ x y)] [d (- x y)])
+        (unless ($bas-same? s ($bas-ref+ x y))
+          (errorf #f "(+ #x~x #x~x) => #x~x" x y s))
+        (unless ($bas-same? d ($bas-ref+ x (- y)))
+          (errorf #f "(- #x~x #x~x) => #x~x" x y d))
+        #t))
+    (define ($bas-check-signs x y)
+      (and ($bas-check x y) ($bas-check (- x) y) ($bas-check x (- y))
+           ($bas-check (- x) (- y))))
+    (define ($bas-from-digits ds) ; 32 bits each, most significant first
+      (fold-left (lambda (acc d) (logor (ash acc 32) d)) 0 ds))
+    (define $bas-ones #xffffffff)
+    (define ($bas-digit kind) ; digits that make carries travel
+      (case (if (fx= kind 0) 3 (random 4))
+        [(0) $bas-ones]
+        [(1) 0]
+        [(2) (if (fx= (random 3) 0) 1 #xfffffffe)]
+        [else (random #x100000000)]))
+    (define ($bas-digits n kind)
+      (map (lambda (i) ($bas-digit kind)) (iota n)))
+    (define ($bas-lows n how) ; the digits below the first, of x and of y
+      (define (zeros-then-1 n)
+        (if (fx= n 0) '() (append (make-list (fx- n 1) 0) '(1))))
+      (case how
+        [(zeros) (values (make-list n 0) (make-list n 0))]
+        [(ones) (values (make-list n $bas-ones) (make-list n $bas-ones))]
+        [(ripple) (values (make-list n $bas-ones) (zeros-then-1 n))]
+        [(all-ones-sum)
+         (let ([x ($bas-digits n 0)])
+           (values x (map (lambda (d) (logxor $bas-ones d)) x)))]
+        [(equal) (let ([x ($bas-digits n 0)]) (values x x))]
+        [(one-less) (values (make-list n 0) (zeros-then-1 n))]
+        [else (values ($bas-digits n 1) ($bas-digits n 1))]))
+    #t)
+  ; around the fixnums
+  (let ([ns (list 0 1 2 (most-positive-fixnum) (- (most-positive-fixnum) 1)
+              (ash 1 29) (ash 1 30) (ash 1 31) (ash 1 32) (- (ash 1 32) 1)
+              (ash 1 60) (ash 1 61) (- (ash 1 61) 1) (ash 1 62) (ash 1 63)
+              (- (ash 1 63) 1) (ash 1 64) (- (ash 1 64) 1) (ash 1 96)
+              (- (ash 1 96) 1) (ash 1 128) (- (ash 1 128) 1))])
+    (andmap (lambda (x) (andmap (lambda (y) ($bas-check-signs x y)) ns)) ns))
+  ; what the most significant digits decide: whether the sum has a digit
+  ; more than the longer operand and the difference a digit less, for
+  ; every pair of lengths up to 19 digits of 32 bits
+  (let ([tops (list 1 2 #x80000000 #xfffffffe $bas-ones)])
+    (andmap
+      (lambda (xl)
+        (andmap
+          (lambda (yl)
+            (andmap
+              (lambda (x0)
+                (andmap
+                  (lambda (y0)
+                    (or (not (<= 0 y0 $bas-ones))
+                        (andmap
+                          (lambda (how)
+                            (let-values ([(xs ys) ($bas-lows (fx- yl 1) how)])
+                              ($bas-check-signs
+                                ($bas-from-digits
+                                  (cons x0
+                                    (append
+                                      (case how
+                                        [(ones ripple all-ones-sum)
+                                         (make-list (fx- xl yl) $bas-ones)]
+                                        [(zeros equal one-less)
+                                         (make-list (fx- xl yl) 0)]
+                                        [else ($bas-digits (fx- xl yl) 1)])
+                                      xs)))
+                                ($bas-from-digits (cons y0 ys)))))
+                          '(zeros ones ripple all-ones-sum equal one-less
+                            random))))
+                  (list (- $bas-ones x0) (- #x100000000 x0) x0
+                    (- x0 1) (- x0 2) (+ x0 1) (+ x0 2) 1)))
+              tops))
+          (cdr (iota (fx+ xl 1)))))
+      (cdr (iota 20))))
+  ; numbers at random
+  (let loop ([i 0])
+    (or (fx= i 20000)
+        (let* ([xl (random (if (fx= (fxand i 15) 0) 80 12))]
+               [kind (random 4)]
+               [x ($bas-from-digits ($bas-digits xl kind))]
+               [y (case (random 6)
+                    ; x + y all ones, or a power of two, or x and y close
+                    [(0) (- (ash 1 (fx* 32 (fxmax xl 1))) x 1)]
+                    [(1) (- (ash 1 (fx* 32 (fxmax xl 1))) x)]
+                    [(2) (if (fx= (random 2) 0) (+ x 1) (- x 1))]
+                    [else ($bas-from-digits
+                            ($bas-digits (random (fx+ xl 1)) kind))])])
+          (and ($bas-check-signs x y) (loop (fx+ i 1))))))
+ )
+
+(mat bignum-mul-div
+  ; * of exact integers against products made fourteen bits at a time
+  ; with fixnums, and quotient and remainder against those products: x is
+  ; q*y + r, r is smaller than y and has the sign of x, and every result
+  ; is normalized. The numbers are taken apart with bitwise-bit-field and
+  ; put together with ash and logor.
+  (begin
+    (define ($bmd-chunks m) ; m >= 0; least significant first
+      (let* ([n (fxquotient (fx+ (bitwise-length m) 13) 14)]
+             [v (make-vector n 0)])
+        (do ([i 0 (fx+ i 1)])
+            ((fx= i n) v)
+          (vector-set! v i
+            (bitwise-bit-field m (fx* 14 i) (fx* 14 (fx+ i 1)))))))
+    (define ($bmd-compose v)
+      (let loop ([i (fx- (vector-length v) 1)] [acc 0])
+        (if (fx< i 0)
+            acc
+            (loop (fx- i 1) (logor (ash acc 14) (vector-ref v i))))))
+    (define ($bmd-ref* x y) ; x, y >= 0
+      (let* ([a ($bmd-chunks x)] [b ($bmd-chunks y)]
+             [na (vector-length a)] [nb (vector-length b)]
+             [c (make-vector (fx+ na nb) 0)])
+        (do ([j 0 (fx+ j 1)])
+            ((fx= j nb))
+          (let ([bj (vector-ref b j)])
+            (let loop ([i 0] [k 0])
+              (if (fx= i na)
+                  (vector-set! c (fx+ i j) k)
+                  ; less than 2^28: a fixnum everywhere
+                  (let ([t (fx+ (fx* (vector-ref a i) bj)
+                                (vector-ref c (fx+ i j))
+                                k)])
+                    (vector-set! c (fx+ i j) (fxand t #x3fff))
+                    (loop (fx+ i 1) (fxsrl t 14)))))))
+        ($bmd-compose c)))
+    (define ($bmd-abs x) (if (negative? x) (- x) x))
+    (define ($bmd-normal? x) ; x is what its value is when made anew
+      (let* ([m ($bmd-compose ($bmd-chunks ($bmd-abs x)))]
+             [v (if (negative? x) (- m) m)])
+        (and (eqv? x v)
+             (eq? (fixnum? x) (fixnum? v))
+             (or (fixnum? x)
+                 (fx= (#%$bignum-length x) (#%$bignum-length v))))))
+    (define ($bmd-check* x y)
+      (let ([p (* x y)]
+            [ref ($bmd-ref* ($bmd-abs x) ($bmd-abs y))])
+        (unless (and ($bmd-normal? p)
+                     (eqv? ($bmd-abs p) ref)
+                     (or (eqv? p 0)
+                         (eq? (negative? p)
+                              (not (eq? (negative? x) (negative? y))))))
+          (errorf #f "(* #x~x #x~x) => #x~x" x y p))
+        #t))
+    (define ($bmd-check/ x y) ; y is not 0
+      (let ([q (quotient x y)] [r (remainder x y)])
+        (unless (and ($bmd-normal? q) ($bmd-normal? r)
+                     (< ($bmd-abs r) ($bmd-abs y))
+                     (or (eqv? r 0) (eq? (negative? r) (negative? x)))
+                     (or (eqv? q 0)
+                         (eq? (negative? q)
+                              (not (eq? (negative? x) (negative? y)))))
+                     (eqv? ($bmd-abs x)
+                           (+ ($bmd-ref* ($bmd-abs q) ($bmd-abs y))
+                              ($bmd-abs r))))
+          (errorf #f "(quotient #x~x #x~x) => #x~x, remainder #x~x"
+            x y q r))
+        #t))
+    (define ($bmd-check x y)
+      (and ($bmd-check* x y) ($bmd-check* (- x) y)
+           (or (eqv? y 0)
+               (and ($bmd-check/ x y) ($bmd-check/ (- x) y)
+                    ($bmd-check/ x (- y)) ($bmd-check/ (- x) (- y))))))
+    (define ($bmd-from-digits ds) ; 32 bits each, most significant first
+      (fold-left (lambda (acc d) (logor (ash acc 32) d)) 0 ds))
+    (define ($bmd-digit kind) ; digits at the edges of a division's estimates
+      (case (if (fx= kind 0) 5 (random 6))
+        [(0) #xffffffff]
+        [(1) 0]
+        [(2) (if (fx= (random 3) 0) 1 #xfffffffe)]
+        [(3) #x80000000]
+        [(4) (if (fx= (random 2) 0) #x7fffffff #x80000001)]
+        [else (random #x100000000)]))
+    (define ($bmd-number n kind) ; of n digits, the first not 0
+      (let ([ds (map (lambda (i) ($bmd-digit kind)) (iota n))])
+        ($bmd-from-digits
+          (if (eqv? (car ds) 0) (cons (fx+ 1 (random 3)) (cdr ds)) ds))))
+    #t)
+  ; around the fixnums and the squares that fit them
+  (let ([ns (list 0 1 2 3 10 23170 23171 #x3fffffff #x40000000
+              (most-positive-fixnum) (+ (most-positive-fixnum) 1)
+              (ash 1 31) (ash 1 32) (- (ash 1 32) 1) (ash 1 61) (ash 1 62)
+              (ash 1 63) (- (ash 1 63) 1) (ash 1 64) (- (ash 1 64) 1)
+              (+ (ash 1 64) 1) (ash 1 96) (- (ash 1 127) 1) (ash 1 128)
+              (- (ash 1 128) 1) (- (ash 1 192) 1))])
+    (andmap (lambda (x) (andmap (lambda (y) ($bmd-check x y)) ns)) ns))
+  ; every pair of lengths up to 14 digits of 32 bits, as the numbers come
+  (andmap
+    (lambda (xl)
+      (andmap
+        (lambda (yl)
+          (andmap
+            (lambda (kind)
+              ($bmd-check ($bmd-number xl kind) ($bmd-number yl kind)))
+            '(0 1 2 3)))
+        (cdr (iota 15))))
+    (cdr (iota 15)))
+  ; dividends put together from a quotient, a divisor and a remainder
+  ; with digits at the edges, where an estimated digit of the quotient
+  ; is one or two too large
+  (let loop ([i 0])
+    (or (fx= i 3000)
+        (let* ([y ($bmd-number (fx+ 1 (random 9)) (random 4))]
+               [q ($bmd-number (fx+ 1 (random (if (fx< i 200) 30 9)))
+                    (random 4))]
+               [r (case (random 4)
+                    [(0) 0]
+                    [(1) (- y 1)]
+                    [else (remainder ($bmd-number (fx+ 1 (random 9)) 1) y)])]
+               [x (+ (* q y) r)])
+          (and (eqv? (quotient x y) q)
+               (eqv? (remainder x y) r)
+               ($bmd-check x y)
+               (loop (fx+ i 1))))))
+  ; longer numbers, where * divides them up first
+  (let loop ([i 0])
+    (or (fx= i 60)
+        (let ([x ($bmd-number (fx+ 20 (random 120)) (random 4))]
+              [y ($bmd-number (fx+ 20 (random 120)) (random 4))])
+          (and ($bmd-check x y) (loop (fx+ i 1))))))
+ )
+
+(mat bignum-fasl
+  ; A bignum is written in 32-bit digits whatever the width of a bigit
+  ; is, so that fasl data written on one machine type can be read on
+  ; another: the object is the last thing written, as its type, its
+  ; sign, the number of digits, and the digits, most significant first,
+  ; each in groups of seven bits with the high bit set in all but the
+  ; last.
+  (begin
+    (define ($bf-bytes x)
+      (parameterize ([fasl-compressed #f])
+        (let-values ([(op get) (open-bytevector-output-port)])
+          (fasl-write x op)
+          (get))))
+    (define ($bf-uptr n)
+      (let loop ([n (fxsrl n 7)] [ls (list (fxand n #x7f))])
+        (if (fx= n 0)
+            ls
+            (loop (fxsrl n 7) (cons (fxior #x80 (fxand n #x7f)) ls)))))
+    (define ($bf-expected x)
+      (let* ([m (if (negative? x) (- x) x)]
+             [n (fxquotient (fx+ (bitwise-length m) 31) 32)])
+        (u8-list->bytevector
+          `(10 ,(if (negative? x) 1 0) ,@($bf-uptr n)
+            ,@(let loop ([i 0] [ls '()])
+                (if (fx= i n)
+                    ls
+                    (loop (fx+ i 1)
+                      (append
+                        ($bf-uptr
+                          (bitwise-bit-field m (fx* 32 i) (fx* 32 (fx+ i 1))))
+                        ls))))))))
+    (define ($bf-check x)
+      (let* ([bv ($bf-bytes x)] [tail ($bf-expected x)]
+             [n (bytevector-length bv)] [k (bytevector-length tail)])
+        (unless (and (fx>= n k)
+                     (let ([end (make-bytevector k)])
+                       (bytevector-copy! bv (fx- n k) end 0 k)
+                       (bytevector=? end tail)))
+          (errorf #f "#x~x is written as ~s" x bv))
+        (let ([y (fasl-read (open-bytevector-input-port bv))])
+          (unless (and (eqv? x y) (bignum? y)
+                       (fx= (#%$bignum-length x) (#%$bignum-length y)))
+            (errorf #f "#x~x is read back as #x~x" x y)))
+        #t))
+    #t)
+  (andmap
+    (lambda (k)
+      (andmap
+        (lambda (d)
+          (let ([x (+ (ash 1 k) d)])
+            (or (fixnum? x)
+                (and ($bf-check x) ($bf-check (- x))))))
+        '(-1 0 1 #x12345678)))
+    '(61 62 63 64 65 95 96 97 127 128 129 191 192 193 1000))
+  (let loop ([i 0])
+    (or (fx= i 200)
+        (and ($bf-check (+ (ash 1 (fx+ 64 (random 600)))
+                           (random (ash 1 64))))
+             (loop (fx+ i 1)))))
+ )
+
 (mat *
     (error? (* 'a))
     (error? (* 'a 3))

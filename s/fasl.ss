@@ -275,11 +275,11 @@
   (lambda (x p t a?)
     (put-u8 p (constant fasl-type-large-integer))
     (put-u8 p (if (positive? x) 0 1))
+    ; in 32-bit digits whatever the target's bigit-bits is, so that
+    ; fasl data is the same for every machine type
     (let* ([x (abs x)] [il (integer-length x)])
-      (let* ([n (bitwise-arithmetic-shift-right il
-                  (log2 (constant bigit-bits)))]
-             [m (bitwise-arithmetic-shift-left n
-                  (log2 (constant bigit-bits)))])
+      (let* ([n (bitwise-arithmetic-shift-right il (log2 32))]
+             [m (bitwise-arithmetic-shift-left n (log2 32))])
         (if (fx= m il)
             (put-uptr p n)
             (begin
@@ -287,7 +287,7 @@
               (put-uptr p (bitwise-arithmetic-shift-right x m))))
         (let f ([end m])
           (unless (= end 0)
-            (let ([start (- end (constant bigit-bits))])
+            (let ([start (- end 32)])
               (put-uptr p (bitwise-bit-field x start end))
               (f start))))))))
 

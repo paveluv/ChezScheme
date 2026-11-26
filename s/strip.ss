@@ -817,7 +817,8 @@
                  (cond
                    [(fx= i (vector-length vuptr))
                     (if (eqv? sign 1) (- v) v)]
-                   [else (loop (bitwise-ior (bitwise-arithmetic-shift v (constant bigit-bits))
+                   ; a fasl large integer's digits are 32 bits
+                   [else (loop (bitwise-ior (bitwise-arithmetic-shift v 32)
                                             (vector-ref vuptr i))
                                (fx+ i 1))]))]
               [eq-hashtable (mutable? subtype minlen veclen vpfasl)

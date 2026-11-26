@@ -6044,7 +6044,7 @@
                     (%seq
                       (check-live ,entry-live* ...)
                       ,(cond
-                         [(= (constant bigit-bits) size)
+                         [(<= size (constant bigit-bits))
                           (%seq
                             (set! ,%td ,(%mref ,%ac0 ,(constant bignum-type-disp)))
                             (set! ,%ac0
@@ -6145,7 +6145,7 @@
                     (%seq
                       (check-live ,entry-live* ...)
                       ,(cond
-                         [(= (constant bigit-bits) size)
+                         [(<= size (constant bigit-bits))
                           (%seq
                             (set! ,%xp
                               ,(%constant-alloc type-typed-object
@@ -6293,7 +6293,7 @@
                     (%seq
                       (check-live ,entry-live* ...)
                       ,(cond
-                         [(= (constant bigit-bits) size)
+                         [(<= size (constant bigit-bits))
                           (%seq
                             (set! ,%xp
                               ,(%constant-alloc type-typed-object

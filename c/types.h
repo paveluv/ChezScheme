@@ -25,7 +25,7 @@
  *    I64: 64-bit signed integer: typically long long
  *    U64: 64-bit unsigned integer: typically unsigned long long
  *  bigit: unsigned integer sizeof(bigit)*8 == bigit_bits
- *  bigit: unsigned integer sizeof(bigit)*8 == bigit_bits
+ *  bigitbigit: unsigned integer sizeof(bigitbigit) == 2*sizeof(bigit)
  */
 
 #if (bigit_bits == 32)
@@ -33,6 +33,11 @@ typedef U32 bigit;
 typedef U64 bigitbigit;
 typedef I32 ibigit;
 typedef I64 ibigitbigit;
+#elif (bigit_bits == 64)
+typedef U64 bigit;
+typedef unsigned __int128 bigitbigit;
+typedef I64 ibigit;
+typedef __int128 ibigitbigit;
 #endif
 
 /* C signed/unsigned conventions:

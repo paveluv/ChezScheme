@@ -113,6 +113,11 @@ static ptr big_logxor(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL xs, IBOOL ys
 
 #define U64_bigits (64 / bigit_bits)
 
+#if (U64_bigits == 1)
+#define I64_TO_BIGNUM(tc,B,x,cnt,sign) IBIGIT_TO_BIGNUM(tc,B,x,cnt,sign)
+#define U64_TO_BIGNUM(tc,B,x,cnt) UBIGIT_TO_BIGNUM(tc,B,x,cnt)
+#endif
+
 #if (U64_bigits == 2)
 #define I64_TO_BIGNUM(tc,B,x,cnt,sign) IBIGITBIGIT_TO_BIGNUM(tc,B,x,cnt,sign)
 #define U64_TO_BIGNUM(tc,B,x,cnt) UBIGITBIGIT_TO_BIGNUM(tc,B,x,cnt)
@@ -1171,7 +1176,8 @@ static double floatify_normalize(bigit *p, iptr e, IBOOL sign, IBOOL sticky) {
   mhigh = 0; mlow = 0; n = enough;
   while (mhigh == 0 && mlow < hidden_bit * 2) {
     mhigh = (bigit)(mlow >> (64-bigit_bits));
-    mlow = (mlow << bigit_bits) | *p++;
+    /* in two steps, since bigit_bits may be 64 */
+    mlow = (mlow << (bigit_bits - 1) << 1) | *p++;
     n -= 1;
     e -= bigit_bits;
   }
@@ -1760,7 +1766,7 @@ static ptr big_logbitp(iptr n, ptr x, iptr xl, IBOOL xs) {
     xp = &BIGIT(x,xl); xb = 1;
     for (i = xl; ; i -= 1) {
       bigit t1 = *--xp, t2 = t1 - xb;
-      if (n < bigit_bits) return Sboolean(~t2 & (1 << n));
+      if (n < bigit_bits) return Sboolean(~t2 & ((bigit)1 << n));
       xb = t2 > t1;
       n -= bigit_bits;
     }
@@ -1812,7 +1818,7 @@ static ptr big_logbit0(ptr tc, ptr origx, iptr n, ptr x, iptr xl, IBOOL xs) {
         *--zp = *--xp;
         n -= bigit_bits;
       }
-      *--zp = *--xp & ~(1 << n);
+      *--zp = *--xp & ~((bigit)1 << n);
       for (i = xl - yl; i > 0; i -= 1) *--zp = *--xp;
       return copy_normalize(tc, zp,xl,0);
     }
@@ -1832,7 +1838,7 @@ static ptr big_logbit0(ptr tc, ptr origx, iptr n, ptr x, iptr xl, IBOOL xs) {
       *--zp = z2;
       n -= bigit_bits;
     }
-    z1 = x2 | (1 << n); z2 = z1 + k; k = z2 < z1;
+    z1 = x2 | ((bigit)1 << n); z2 = z1 + k; k = z2 < z1;
     *--zp = z2;
     for (; i > 0; i -= 1) {
       x1 = *--xp; x2 = x1 - xb; xb = x2 > x1;
@@ -1904,7 +1910,7 @@ static ptr big_logbit1(ptr tc, ptr origx, iptr n, ptr x, iptr xl, IBOOL xs) {
       *--zp = z2;
       n -= bigit_bits;
     }
-    z1 = x2 & ~(1 << n);
+    z1 = x2 & ~((bigit)1 << n);
     z2 = z1 + k; k = z2 < z1;
     *--zp = z2;
     for (i = xl - yl; i > 0; i -= 1) {

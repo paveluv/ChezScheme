@@ -14,3 +14,7 @@
 (define-constant typedef-u64 "unsigned long long")
 
 (define-constant long-bits 32)
+
+;; Visual C has no 128-bit integer type for the product of two 64-bit
+;; bigits, so bigits stay 32 bits wide on all Windows machine types
+(define-constant bigit-bits 32)

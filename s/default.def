@@ -39,6 +39,10 @@
 
 (define-constant-default align-rpheader #f)
 
+;; width of a bignum's digit; the C compiler must have an integer type
+;; of twice the width (see "types.h")
+(define-constant-default bigit-bits 32)
+
 ;; instruction availability (defaults to unavailable)
 (define-constant-default integer-divide-instruction #f)
 (define-constant-default popcount-instruction #f)
