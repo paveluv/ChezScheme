@@ -1998,6 +1998,35 @@
       (let ([ds (map (lambda (i) ($bmd-digit kind)) (iota n))])
         ($bmd-from-digits
           (if (eqv? (car ds) 0) (cons (fx+ 1 (random 3)) (cdr ds)) ds))))
+    ; for numbers too long to multiply fourteen bits at a time: what is
+    ; left of m >= 0 by a prime under 2^14, from its chunks with fixnums
+    (define ($bmd-residue m p)
+      (let ([v ($bmd-chunks m)])
+        (let loop ([i (fx- (vector-length v) 1)] [r 0])
+          (if (fx< i 0)
+              r
+              (loop (fx- i 1)
+                    (fxmod (fx+ (fx* r #x4000) (vector-ref v i)) p))))))
+    (define $bmd-primes '(16381 16369 16363 16361 16349 16339 16333 16319))
+    (define ($bmd-check-long x y) ; x >= y > 0
+      (let ([p (* x y)] [q (quotient x y)] [r (remainder x y)])
+        (unless (and ($bmd-normal? p) ($bmd-normal? q) ($bmd-normal? r)
+                     (>= p 0) (>= q 0) (>= r 0) (< r y)
+                     (eqv? (* (- x) y) (- p))
+                     (eqv? (quotient (- x) y) (- q))
+                     (eqv? (remainder (- x) y) (- r))
+                     (andmap
+                       (lambda (m)
+                         (let ([rx ($bmd-residue x m)]
+                               [ry ($bmd-residue y m)])
+                           (and (fx= ($bmd-residue p m) (fxmod (fx* rx ry) m))
+                                (fx= rx
+                                     (fxmod (fx+ (fx* ($bmd-residue q m) ry)
+                                                 ($bmd-residue r m))
+                                            m)))))
+                       $bmd-primes))
+          (errorf #f "long * or quotient of #x~x and #x~x" x y))
+        #t))
     #t)
   ; around the fixnums and the squares that fit them
   (let ([ns (list 0 1 2 3 10 23170 23171 #x3fffffff #x40000000
@@ -2041,6 +2070,18 @@
         (let ([x ($bmd-number (fx+ 20 (random 120)) (random 4))]
               [y ($bmd-number (fx+ 20 (random 120)) (random 4))])
           (and ($bmd-check x y) (loop (fx+ i 1))))))
+  ; numbers long enough for each algorithm * and quotient go to above
+  ; the kernel's, whichever the width of a bigit: lengths in digits of
+  ; 32 bits, checked by what is left of them by eight primes
+  (andmap
+    (lambda (lengths)
+      (let loop ([kind 0])
+        (or (fx= kind 4)
+            (and ($bmd-check-long ($bmd-number (car lengths) kind)
+                                  ($bmd-number (cadr lengths) kind))
+                 (loop (fx+ kind 1))))))
+    '((300 300) (700 300) (1000 1000) (1700 600) (2200 2200) (2200 900)
+      (2200 60) (2250 2200) (3000 1000) (4400 2200) (7000 2200)))
  )
 
 (mat bignum-fasl

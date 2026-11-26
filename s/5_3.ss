@@ -111,7 +111,16 @@
 ;;   Copyright (c) 2000-2007, Felix L. Winkelmann
 ;;   All rights reserved.
 
-(define DIV-LIMIT 100)
+;; The sizes from which `*` and `quotient` leave the kernel for the
+;; algorithms below are counts of bigits, and each is where its
+;; algorithm starts to win, which is later the faster the kernel is at
+;; a bigit: (size-limit <for 32-bit bigits> <for 64-bit bigits>)
+(define-syntax size-limit
+  (syntax-rules ()
+    [(_ at-32 at-64)
+     (constant-case bigit-bits [(32) at-32] [(64) at-64])]))
+
+(define DIV-LIMIT (size-limit 100 256))
 
 (define (bigits->bits n) (fx* (constant bigit-bits) n))    ; Small helper
 
@@ -2511,9 +2520,9 @@
                               [(fx= x 1) (unless (number? y) (nonnumber-error who y)) y]
                               [else ($negate who y)])]
                             [else (integer* x y)])
-                           (let ([slim 32]
-				 [klim 100]
-				 [t3lim 512])
+                           (let ([slim (size-limit 32 80)]
+				 [klim (size-limit 100 384)]
+				 [t3lim (size-limit 512 1024)])
                              ; both of the following functions were adapted from
                              ; https://github.com/casevh/DecInt/blob/master/DecInt.py#L451
                              ; under the BSD license
@@ -2613,7 +2622,8 @@
                                 (define xl (if (bignum? x) ($bignum-length x) 0))
                                 (define yl (if (bignum? y) ($bignum-length y) 0))
                                 (cond
-                                 [(and (fx< xl 30) (fx< yl 30))
+                                 [(and (fx< xl (size-limit 30 80))
+                                       (fx< yl (size-limit 30 80)))
                                   (integer* x y)]
                                  [else
                                   (let* ([k (fx* (fxquotient (fxmax xl yl) 2) (constant bigit-bits))]
