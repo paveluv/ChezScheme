@@ -1200,13 +1200,16 @@ ptr S_do_gc(IGEN max_cg, IGEN min_tg, IGEN max_tg, ptr count_roots) {
     S_G.max_nonstatic_generation = S_G.new_max_nonstatic_generation;
   }
 
-  if (max_tg == max_cg && max_cg == S_G.new_max_nonstatic_generation && max_cg < S_G.max_nonstatic_generation) {
-    IGEN new_g, old_g, from_g, to_g; ISPC s; seginfo *si, *nextsi, *tail;
+  if (max_cg == S_G.new_max_nonstatic_generation && max_cg < S_G.max_nonstatic_generation) {
+    IGEN new_g, old_g, tg, from_g, to_g; ISPC s; seginfo *si, *nextsi, *tail;
    /* reducing max_nonstatic_generation */
     new_g = S_G.new_max_nonstatic_generation;
     old_g = S_G.max_nonstatic_generation;
-   /* first, collect everything to old_g, ignoring min_tg */
-    result = S_gc(tc, old_g, old_g, old_g, count_roots);
+   /* first, collect everything to old_g, ignoring min_tg; for a static
+      max_tg, collect everything to the static generation instead, which
+      is where collecting new_g after the reduction would put it */
+    tg = (max_tg == max_cg) ? old_g : static_generation;
+    result = S_gc(tc, old_g, tg, tg, count_roots);
    /* now transfer old_g info to new_g, and clear old_g info */
     S_G.bytes_of_generation[new_g] = S_G.bytes_of_generation[old_g]; S_G.bytes_of_generation[old_g] = 0;
     for (s = 0; s <= max_real_space; s += 1) {

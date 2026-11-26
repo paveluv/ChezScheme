@@ -3093,6 +3093,20 @@ in fasl files does not generally make sense.
 %-----------------------------------------------------------------------------
 \section{Bug Fixes}\label{section:bugfixes}
 
+\subsection{Repair \scheme{collect} into the static generation after lowering the maximum generation (10.5.0)}
+
+A smaller value of \scheme{collect-maximum-generation} takes effect at
+the next collection of the new maximum nonstatic generation. When that
+collection was into the static generation, as in
+\scheme{(collect 1 'static)} after
+\scheme{(collect-maximum-generation 1)}, it ran with the old maximum
+still in place: objects in the generations above the new maximum were
+neither collected nor tracked as referenced from the newly static
+objects, so a later collection could move them and leave a static
+object with a stale reference. Such a collection now moves every
+nonstatic object into the static generation, as collecting the new
+maximum generation would once the change had taken effect.
+
 \subsection{Repair \scheme{collect} into the static generation with a minimum target (10.5.0)}
 
 A call to \scheme{collect} with the maximum nonstatic generation, a

@@ -5708,6 +5708,31 @@ evaluating module init
                    (collect 0 1)
                    (eq? (vector-ref v 0) s)))))))
     (and (try 1) (try (collect-maximum-generation))))
+  ; a lowering of the maximum nonstatic generation that is still pending
+  ; takes effect at a collection into the static generation too, so no
+  ; static object is left referring, untracked, to an object of a
+  ; generation above the new maximum
+  (let ()
+    (define (try collect-static)
+      (parameterize ([collect-maximum-generation (max (collect-maximum-generation) 2)])
+        (with-interrupts-disabled
+          (let ([s (make-string 10 #\a)])
+            (collect 0 1)
+            (collect 1 2)
+            (let* ([v (make-vector 20000 s)] [n (compute-size v 0)])
+              (collect 0 1)
+              (collect-maximum-generation 1)
+              (let ([b0 (bytes-allocated 'static)])
+                (and (collect-static v n)
+                     (>= (- (bytes-allocated 'static) b0) n)
+                     (begin
+                       (collect 1 1)
+                       (eq? (vector-ref v 0) s)))))))))
+    (and (try (lambda (v n) (collect 1 'static) #t))
+         (try (lambda (v n) (collect 1 1 'static) #t))
+         (try (lambda (v n)
+                (let ([r (collect 1 'static 'static (list v))])
+                  (and (= (length r) 1) (>= (car r) n)))))))
   (parameterize ([collect-maximum-generation 4]
                  [collect-generation-radix 2]
                  [collect-trip-bytes (expt 2 20)]
