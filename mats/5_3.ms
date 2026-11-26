@@ -2027,6 +2027,19 @@
                        $bmd-primes))
           (errorf #f "long * or quotient of #x~x and #x~x" x y))
         #t))
+    (define ($bmd-gcd x y) ; x, y >= 0, by halving and subtracting alone
+      (define (odd m) (ash m (- (bitwise-first-bit-set m))))
+      (cond
+        [(eqv? x 0) y]
+        [(eqv? y 0) x]
+        [else
+         (let loop ([a (odd x)] [b (odd y)])
+           (cond
+             [(= a b)
+              (ash a (fxmin (bitwise-first-bit-set x)
+                            (bitwise-first-bit-set y)))]
+             [(< a b) (loop a (odd (- b a)))]
+             [else (loop (odd (- a b)) b)]))]))
     #t)
   ; around the fixnums and the squares that fit them
   (let ([ns (list 0 1 2 3 10 23170 23171 #x3fffffff #x40000000
@@ -2081,7 +2094,21 @@
                                   ($bmd-number (cadr lengths) kind))
                  (loop (fx+ kind 1))))))
     '((300 300) (700 300) (1000 1000) (1700 600) (2200 2200) (2200 900)
-      (2200 60) (2250 2200) (3000 1000) (4400 2200) (7000 2200)))
+      (2200 60) (2250 2200) (3000 1000) (4400 2200) (7000 2200) (40 1)
+      (40 2) (2200 1) (2200 2)))
+  ; gcd of long numbers with a factor in common, and of a long number
+  ; and a short one; lengths in digits of 32 bits
+  (andmap
+    (lambda (lengths)
+      (let* ([g ($bmd-number (caddr lengths) 1)]
+             [x (* g ($bmd-number (car lengths) 2))]
+             [y (* g ($bmd-number (cadr lengths) 3))]
+             [ref ($bmd-gcd x y)])
+        (and (eqv? (gcd x y) ref)
+             (eqv? (gcd (- x) y) ref)
+             (eqv? (gcd y x) ref))))
+    '((300 300 1) (700 300 2) (300 290 40) (600 20 7) (900 1 1) (900 2 1)
+      (60 1 1) (13 2 1)))
  )
 
 (mat bignum-fasl

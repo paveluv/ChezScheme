@@ -36,8 +36,11 @@ static ptr big_mul(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL sign);
 static void big_short_trunc(ptr tc, ptr x, bigit s, iptr xl, IBOOL qs, IBOOL rs, ptr *q, ptr *r);
 static void big_trunc(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL qs, IBOOL rs, ptr *q, ptr *r);
 static INT normalize(bigit *xp, bigit *yp, iptr xl, iptr yl);
-static bigit quotient_digit(ptr tc, bigit *xp, bigit *yp, iptr yl);
-static bigit qhat(bigit *xp, bigit *yp);
+static INT leading_zeros(bigit b);
+static bigit reciprocal_divide(bigit *zp, const bigit *xp, iptr n, bigit s);
+static bigit reciprocal_for(bigit d, iptr m);
+static bigit quotient_digit(ptr tc, bigit *xp, bigit *yp, iptr yl, bigit v);
+static bigit qhat(bigit *xp, bigit *yp, bigit v);
 static ptr big_short_gcd(ptr tc, ptr x, bigit y, iptr xl);
 static ptr big_gcd(ptr tc, ptr x, ptr y, iptr xl, iptr yl);
 static ptr s_big_ash(ptr tc, bigit *xp, iptr xl, IBOOL sign, iptr cnt);
@@ -476,6 +479,45 @@ ptr Sinteger64(Sint64_t i) { /* convert arg to Scheme integer */
   *quo = (bigit)(_tmp_ / _tmpr_);\
   *rem = (bigit)(_tmp_ % _tmpr_);}
 
+/* Whether a division with m bigits of quotient multiplies by the
+   reciprocal of a bigit of the divisor (EDIVR) instead of dividing a
+   bigitbigit by it for each bigit of the quotient (EDIV). Making the
+   reciprocal costs a division of a bigitbigit, and using it some steps,
+   so it is ahead only from some length of quotient on: for 64-bit
+   bigits, 4 bigits where it is used to estimate each bigit of the
+   quotient of a divisor of two bigits or more, and 16 where the divisor
+   is one bigit and the division of a bigitbigit is all there was (on an
+   AMD Zen 5, whose division instruction is fast, with GCC 14 and Clang
+   19). For 32-bit bigits a 64-bit machine divides a bigitbigit with one
+   instruction, which is ahead, and the division is as it was. */
+#define use_reciprocal(m, from) (bigit_bits == 64 && (m) >= (from))
+#define RECIPROCAL_ESTIMATE 4
+#define RECIPROCAL_ONE_BIGIT 16
+
+/* A bigitbigit is divided by a bigit d that has its most significant
+   bit set by multiplying by a reciprocal of d: Moller and Granlund,
+   "Improved Division by Invariant Integers".
+
+   ERECIP(d) is the reciprocal, floor((B^2 - 1) / d) - B for B =
+   2^bigit_bits; it is the one division of a bigitbigit. */
+#define ERECIP(d)\
+  ((bigit)(((((bigitbigit)(bigit)~(d)) << bigit_bits) | bigit_mask) / (d)))
+
+/* bigitbigit / bigit -> bigit quotient and remainder, for high < d and
+   v = ERECIP(d) */
+#define EDIVR(high,low,d,v,quo,rem) {\
+  bigit _u1_ = (high), _u0_ = (low), _d_ = (d), _q1_, _q0_, _r_;\
+  bigitbigit _tmp_ =\
+    (bigitbigit)(v) * _u1_ + (((bigitbigit)_u1_ << bigit_bits) | _u0_);\
+  _q1_ = (bigit)((bigit)(_tmp_ >> bigit_bits) + 1);\
+  _q0_ = (bigit)_tmp_;\
+  _r_ = (bigit)(_u0_ - _q1_ * _d_);\
+  if (_r_ > _q0_) { _q1_ = (bigit)(_q1_ - 1); _r_ = (bigit)(_r_ + _d_); }\
+  /* at most once, and seldom: a loop, so that it stays a branch */\
+  while (_r_ >= _d_) { _q1_ = (bigit)(_q1_ + 1); _r_ = (bigit)(_r_ - _d_); }\
+  *(quo) = _q1_;\
+  *(rem) = _r_;}
+
 /*
 ***
 comparison
@@ -794,11 +836,57 @@ static void big_short_trunc(ptr tc, ptr x, bigit s, iptr xl, IBOOL qs, IBOOL rs,
 
   PREPARE_BIGNUM(tc, W(tc),xl)
 
-  for (i = xl, k = 0, xp = &BIGIT(x,0), zp = &BIGIT(W(tc),0); i-- > 0; )
-    EDIV(k, *xp++, s, zp++, &k)
+  if (use_reciprocal(xl, RECIPROCAL_ONE_BIGIT))
+    k = reciprocal_divide(&BIGIT(W(tc),0), &BIGIT(x,0), xl, s);
+  else
+    for (i = xl, k = 0, xp = &BIGIT(x,0), zp = &BIGIT(W(tc),0); i-- > 0; )
+      EDIV(k, *xp++, s, zp++, &k)
 
   if (q != (ptr *)NULL) *q = copy_normalize(tc, &BIGIT(W(tc),0),xl,qs);
   if (r != (ptr *)NULL) *r = copy_normalize(tc, &k,1,rs);
+}
+
+/* the number of zero bits above the first one bit of b, which is not 0 */
+static INT leading_zeros(bigit b) {
+  INT n = 0, half;
+
+  for (half = bigit_bits / 2; half != 0; half /= 2)
+    if ((b >> (bigit_bits - half)) == 0) { n += half; b <<= half; }
+
+  return n;
+}
+
+/* divides the n bigits at xp, most significant first, by s, which is
+   not 0, multiplying by a reciprocal; puts the n bigits of the quotient
+   at zp unless zp is NULL, and returns the remainder */
+static bigit reciprocal_divide(bigit *zp, const bigit *xp, iptr n, bigit s) {
+  bigit d, v, q, r, low;
+  INT shft;
+  iptr i;
+
+  /* shift s and x left until s has its most significant bit set; what
+     leaves the first bigit of x is the first remainder.  The shift
+     counts are split in two where they might be bigit_bits. */
+  shft = leading_zeros(s);
+  d = s << shft;
+  v = ERECIP(d);
+  r = (xp[0] >> 1) >> (bigit_bits - 1 - shft);
+
+  for (i = 0; i < n; i += 1) {
+    low = xp[i] << shft;
+    if (i + 1 < n) low |= (xp[i+1] >> 1) >> (bigit_bits - 1 - shft);
+    EDIVR(r, low, d, v, &q, &r)
+    if (zp != NULL) zp[i] = q;
+  }
+
+  return r >> shft;
+}
+
+/* for quotient_digit: the reciprocal of d, the most significant bigit
+   of a divisor, if it is worth making for m bigits of quotient, else 0,
+   which no reciprocal is */
+static bigit reciprocal_for(bigit d, iptr m) {
+  return use_reciprocal(m, RECIPROCAL_ESTIMATE) ? ERECIP(d) : 0;
 }
 
 static void big_trunc(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL qs, IBOOL rs, ptr *q, ptr *r) {
@@ -806,7 +894,7 @@ static void big_trunc(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL qs, IBOOL rs
   bigit *p, *xp, *yp;
   iptr m = xl-yl+1;
   INT d;
-  bigit k;
+  bigit k, v;
 
   PREPARE_BIGNUM(tc, U(tc), xl+1)
   for (i = xl, xp = &BIGIT(U(tc),xl+1), p = &BIGIT(x,xl); i-- > 0;) *--xp = *--p;
@@ -816,13 +904,14 @@ static void big_trunc(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL qs, IBOOL rs
   for (i = yl, yp = &BIGIT(V(tc),yl), p = &BIGIT(y,yl); i-- > 0;) *--yp = *--p;
 
   d = normalize(xp, yp, xl, yl);
+  v = reciprocal_for(*yp, m);
 
   if (q == (ptr *)NULL) {
-    for (i = m; i-- > 0 ; xp++) (void) quotient_digit(tc, xp, yp, yl);
+    for (i = m; i-- > 0 ; xp++) (void) quotient_digit(tc, xp, yp, yl, v);
   } else {
     PREPARE_BIGNUM(tc, W(tc),m)
     p = &BIGIT(W(tc),0);
-    for (i = m; i-- > 0 ; xp++) *p++ = quotient_digit(tc, xp, yp, yl);
+    for (i = m; i-- > 0 ; xp++) *p++ = quotient_digit(tc, xp, yp, yl, v);
     *q = copy_normalize(tc, &BIGIT(W(tc),0),m,qs);
   }
 
@@ -851,14 +940,15 @@ static INT normalize(bigit *xp, bigit *yp, iptr xl, iptr yl) {
   return shft;
 }
 
-static bigit quotient_digit(ptr tc, bigit *xp, bigit *yp, iptr yl) {
+/* yp has its most significant bit set; v is reciprocal_for(*yp, ...) */
+static bigit quotient_digit(ptr tc, bigit *xp, bigit *yp, iptr yl, bigit v) {
   bigit *p1, *p2, q, k, b, prod;
   iptr i;
 
   /* this function is called in loops, so use fuel every time */
   USE_TRAP_FUEL(tc, yl);
 
-  q = qhat(xp, yp);
+  q = qhat(xp, yp, v);
 
   for (i = yl, p1 = xp+yl, p2 = yp+yl-1, k = 0, b = 0; i-- > 0; p1--, p2--) {
     EMUL(*p2, q, k, &prod, &k)
@@ -878,7 +968,7 @@ static bigit quotient_digit(ptr tc, bigit *xp, bigit *yp, iptr yl) {
   return q;
 }
 
-static bigit qhat(bigit *xp, bigit *yp) {
+static bigit qhat(bigit *xp, bigit *yp, bigit v) {
   bigit q, r, high, low, k;
 
   k = 0;
@@ -887,7 +977,10 @@ static bigit qhat(bigit *xp, bigit *yp) {
     q = bigit_mask;
     EADDC(*(xp+1), *yp, &r, &k)
   } else {
-    EDIV(*xp, *(xp+1), *yp, &q, &r)
+    if (v != 0)
+      EDIVR(*xp, *(xp+1), *yp, v, &q, &r)
+    else
+      EDIV(*xp, *(xp+1), *yp, &q, &r)
   }
 
   for (; k == 0; q--) {
@@ -927,8 +1020,11 @@ static ptr big_short_gcd(ptr tc, ptr x, bigit y, iptr xl) {
 
   USE_TRAP_FUEL(tc, xl);
 
-  for (i = xl, r = 0, xp = &BIGIT(x,0); i-- > 0; )
-    EDIV(r, *xp++, y, &q, &r)
+  if (use_reciprocal(xl, RECIPROCAL_ONE_BIGIT))
+    r = reciprocal_divide((bigit *)NULL, &BIGIT(x,0), xl, y);
+  else
+    for (i = xl, r = 0, xp = &BIGIT(x,0); i-- > 0; )
+      EDIV(r, *xp++, y, &q, &r)
 
   return uptr_gcd((uptr)y,(uptr)r);
 }
@@ -936,7 +1032,7 @@ static ptr big_short_gcd(ptr tc, ptr x, bigit y, iptr xl) {
 static ptr big_gcd(ptr tc, ptr x, ptr y, iptr xl, iptr yl) {
   iptr i;
   INT shft, asc;
-  bigit *p, *xp, *yp, k, b;
+  bigit *p, *xp, *yp, k, b, v;
 
  /* Copy x to scratch bignum, with a leading zero */
   PREPARE_BIGNUM(tc, U(tc),xl+1)
@@ -978,7 +1074,8 @@ static ptr big_gcd(ptr tc, ptr x, ptr y, iptr xl, iptr yl) {
     }
 
    /* destructive remainder x = x rem y */
-    for (i = xl-yl+1; i-- > 0; xp++) (void) quotient_digit(tc, xp, yp, yl);
+    v = reciprocal_for(*yp, xl-yl+1);
+    for (i = xl-yl+1; i-- > 0; xp++) (void) quotient_digit(tc, xp, yp, yl, v);
 
    /* strip leading zero bigits.  remainder is at most yl bigits long */
     for (i = yl ; *xp == 0 && i > 0; xp++, i--);
@@ -1007,7 +1104,10 @@ static ptr big_gcd(ptr tc, ptr x, ptr y, iptr xl, iptr yl) {
     bigit d, r;
 
     d = *yp;
-    for (r = 0; xl-- > 0; xp++) EDIV(r, *xp, d, xp, &r)
+    if (use_reciprocal(xl, RECIPROCAL_ONE_BIGIT))
+      r = reciprocal_divide((bigit *)NULL, xp, xl, d);
+    else
+      for (r = 0; xl-- > 0; xp++) EDIV(r, *xp, d, xp, &r)
     return uptr_gcd((uptr)(d>>asc), (uptr)(r>>asc));
   }
 }
@@ -1132,7 +1232,7 @@ static double big_short_floatify(ptr tc, ptr x, bigit s, iptr xl, IBOOL sign) {
 
 static double big_floatify(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL sign) {
   iptr i, ul;
-  bigit *p, *xp, *yp, k;
+  bigit *p, *xp, *yp, k, v;
 
  /* copy x to U(tc), scaling with added zero bigits as necessary */
   ul = xl < yl + enough-1 ? yl + enough-1 : xl;
@@ -1146,12 +1246,13 @@ static double big_floatify(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL sign) {
   for (i = yl, yp = &BIGIT(V(tc),yl), p = &BIGIT(y,yl); i-- > 0;) *--yp = *--p;
 
   (void) normalize(xp, yp, ul, yl);
+  v = reciprocal_for(*yp, enough);
 
   PREPARE_BIGNUM(tc, W(tc),4)
   p = &BIGIT(W(tc),0);
 
  /* compute 'enough' bigits of the quotient */
-  for (i = enough; i-- > 0; xp++) *p++ = quotient_digit(tc, xp, yp, yl);
+  for (i = enough; i-- > 0; xp++) *p++ = quotient_digit(tc, xp, yp, yl, v);
 
  /* set k if remainder is nonzero */
   k = 0;
