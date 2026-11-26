@@ -29,6 +29,8 @@ static ptr copy_normalize(ptr tc, const bigit *p, iptr len, IBOOL sign);
 static IBOOL abs_big_lt(ptr x, ptr y, iptr xl, iptr yl);
 static IBOOL abs_big_eq(ptr x, ptr y, iptr xl, iptr yl);
 static ptr big_negate(ptr tc, ptr x);
+static bigit add_bigits(bigit *zp, const bigit *x, const bigit *y, iptr xl, iptr yl);
+static void sub_bigits(bigit *zp, const bigit *x, const bigit *y, iptr xl, iptr yl);
 static ptr big_add_pos(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL sign);
 static ptr big_add_neg(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL sign);
 static ptr big_add(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL xs, IBOOL ys);
@@ -581,15 +583,14 @@ ptr S_big_negate(ptr x) {
   return big_negate(get_thread_context(), x);
 }
 
-/* assumptions: BIGLEN(x) >= BIGLEN(y) */
-static ptr big_add_pos(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL sign) {
+/* the magnitude of x + y, xl >= yl, into the xl bigits at zp; returns
+   the carry out of the most significant bigit */
+static bigit add_bigits(bigit *zp, const bigit *x, const bigit *y, iptr xl, iptr yl) {
   iptr i;
-  bigit *xp, *yp, *zp;
+  const bigit *xp = x + xl - 1, *yp = y + yl - 1;
   bigit k = 0;
 
-  PREPARE_BIGNUM(tc, W(tc),xl+1)
-
-  xp = &BIGIT(x,xl-1); yp = &BIGIT(y,yl-1); zp = &BIGIT(W(tc),xl);
+  zp += xl - 1;
 
   for (i = yl; i-- > 0; )
     EADDC(*xp--, *yp--, zp--, &k)
@@ -598,20 +599,16 @@ static ptr big_add_pos(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL sign) {
   for (; i-- > 0; )
     *zp-- = *xp--;
 
-  *zp = k;
-
-  return copy_normalize(tc, zp,xl+1,sign);
+  return k;
 }
 
-/* assumptions: x >= y */
-static ptr big_add_neg(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL sign) {
+/* the magnitude of x - y, x >= y, into the xl bigits at zp */
+static void sub_bigits(bigit *zp, const bigit *x, const bigit *y, iptr xl, iptr yl) {
   iptr i;
-  bigit *xp, *yp, *zp;
+  const bigit *xp = x + xl - 1, *yp = y + yl - 1;
   bigit b = 0;
 
-  PREPARE_BIGNUM(tc, W(tc),xl)
-
-  xp = &BIGIT(x,xl-1); yp = &BIGIT(y,yl-1); zp = &BIGIT(W(tc),xl-1);
+  zp += xl - 1;
 
   for (i = yl; i-- > 0; )
     ESUBC(*xp--, *yp--, zp--, &b)
@@ -619,8 +616,62 @@ static ptr big_add_neg(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL sign) {
     ESUBC(*xp--, 0, zp--, &b)
   for (; i-- > 0; )
     *zp-- = *xp--;
+}
 
-  return copy_normalize(tc, zp+1,xl,sign);
+/* assumptions: BIGLEN(x) >= BIGLEN(y) */
+static ptr big_add_pos(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL sign) {
+  bigit *zp;
+
+  if (xl > ptr_bigits) {
+    /* The sum is too long for a fixnum and has xl or xl+1 bigits. The
+       most significant bigits tell which, unless a carry into them
+       would decide it, and then the sum is made where it stays, without
+       a copy. */
+    bigit x0 = BIGIT(x,0);
+    bigit top = x0 + (xl == yl ? BIGIT(y,0) : 0);
+
+    if (top < x0) {
+      ptr z = S_bignum(tc, xl+1, sign);
+      BIGIT(z,0) = add_bigits(&BIGIT(z,1), &BIGIT(x,0), &BIGIT(y,0), xl, yl);
+      return z;
+    } else if (top != bigit_mask) {
+      ptr z = S_bignum(tc, xl, sign);
+      (void)add_bigits(&BIGIT(z,0), &BIGIT(x,0), &BIGIT(y,0), xl, yl);
+      return z;
+    }
+  }
+
+  PREPARE_BIGNUM(tc, W(tc),xl+1)
+
+  zp = &BIGIT(W(tc),0);
+  *zp = add_bigits(zp+1, &BIGIT(x,0), &BIGIT(y,0), xl, yl);
+
+  return copy_normalize(tc, zp,xl+1,sign);
+}
+
+/* assumptions: x >= y */
+static ptr big_add_neg(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL sign) {
+  bigit *zp;
+
+  if (xl > ptr_bigits) {
+    /* The difference is too long for a fixnum and has xl bigits when its
+       most significant bigit is not zero after a borrow from it, and then
+       the difference is made where it stays, without a copy. */
+    bigit top = BIGIT(x,0) - (xl == yl ? BIGIT(y,0) : 0);
+
+    if (top >= 2) {
+      ptr z = S_bignum(tc, xl, sign);
+      sub_bigits(&BIGIT(z,0), &BIGIT(x,0), &BIGIT(y,0), xl, yl);
+      return z;
+    }
+  }
+
+  PREPARE_BIGNUM(tc, W(tc),xl)
+
+  zp = &BIGIT(W(tc),0);
+  sub_bigits(zp, &BIGIT(x,0), &BIGIT(y,0), xl, yl);
+
+  return copy_normalize(tc, zp,xl,sign);
 }
 
 static ptr big_add(ptr tc, ptr x, ptr y, iptr xl, iptr yl, IBOOL xs, IBOOL ys) {

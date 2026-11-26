@@ -232,19 +232,21 @@ steps to add or subtract and a quarter as many to multiply or divide.
 A 128-bit integer divided by a 64-bit bigit is no single instruction
 that a C compiler emits, so a division with a long enough quotient
 multiplies by the reciprocal of the divisor's leading bigit instead.
-On those machine types, sums and differences of large bignums take
-about half the time they took, products and quotients of large bignums
-a third of the time or less, and a large bignum divided by a fixnum
-between a third and a fifth. The sizes at which \scheme{*} and
-\scheme{quotient} leave the kernel's algorithms for Karatsuba's, Toom
-and Cook's, and Burnikel and Ziegler's are counts of bigits; with
-64-bit bigits they are set to where each of those starts to win over
-the faster kernel, which is at four to eight times as many bits as
-before. Bigits remain 32 bits wide on the 32-bit machine types, for
-portable bytecode, and on Windows, where the kernel may be compiled by
-a compiler that has no 128-bit integer type. The fasl format still
-holds a bignum as 32-bit digits, so fasl data and object files are the
-same as before and can still be read on any machine type.
+Sums and differences are made where they stay, without a copy, when
+the leading bigits tell their length. On those machine types, sums and
+differences of large bignums take between a third and a half of the
+time they took, products and quotients of large bignums a third of the
+time or less, and a large bignum divided by a fixnum between a third
+and a fifth. The sizes at which \scheme{*} and \scheme{quotient} leave
+the kernel's algorithms for Karatsuba's, Toom and Cook's, and Burnikel
+and Ziegler's are counts of bigits; with 64-bit bigits they are set to
+where each of those starts to win over the faster kernel, which is at
+four to eight times as many bits as before. Bigits remain 32 bits wide
+on the 32-bit machine types, for portable bytecode, and on Windows,
+where the kernel may be compiled by a compiler that has no 128-bit
+integer type. The fasl format still holds a bignum as 32-bit digits,
+so fasl data and object files are the same as before and can still be
+read on any machine type.
 
 \subsection{Named Cost Center (10.4.0)}
 
