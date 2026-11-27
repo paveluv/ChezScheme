@@ -2977,7 +2977,19 @@
                                      `(immediate 1)))
                               (let ([,c ,(build-add-bigits loop z
                                            (%inline + ,zoff ,d) a d b bn)])
-                                ,(build-carry-copy z zoff a d c)))))))))))))
+                                ,(build-carry-copy z zoff a d c))
+                              ;; The sum is atomic for interrupts, so it
+                              ;; charges the trap counter for its work,
+                              ;; as fills and copies do and at their
+                              ;; rate, a tick for four words, counting
+                              ;; the words read: two for each bigit
+                              ;; added, one for each copied. That is a
+                              ;; tick for two bigits of two operands of
+                              ;; one length, the time the kernel's own
+                              ;; bigit loops take for a tick. Here only z
+                              ;; is live if the charge ends the fuel.
+                              ,(build-use-trap-fuel (%inline + ,xn ,yn))
+                              ,z)))))))))))
       ;; (#3%$bignum-add-magnitudes x y [loop]), loop one of the
       ;; machine's, quoted
       (define-inline 3 $bignum-add-magnitudes

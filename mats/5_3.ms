@@ -1911,6 +1911,39 @@
           (and ($bas-check-signs x y) (loop (fx+ i 1))))))
  )
 
+(mat bignum-add-fuel
+  ; A sum of bignums is atomic for interrupts, so it takes fuel in
+  ; proportion to its length, as the long vector operations do (4.ms):
+  ; with fuel to spare an engine finishes, and with little fuel a long
+  ; sum ends it, at the sum or at the next check after it. The operands
+  ; are made at run time, so that the sum is.
+  (begin
+    (define ($baf-big bigits) (- (expt 2 (* 64 bigits)) 1))
+    (define ($baf-run fuel sum)
+      ((make-engine
+         (lambda ()
+           (and (bignum? (sum))
+                (let loop ([i 0]) (if (fx< i 100) (loop (fx+ i 1)) 'done)))))
+       fuel
+       (lambda (fuel v) v)
+       (lambda (e) 'not-done)))
+    #t)
+  (eq? (let ([x ($baf-big 512)]) ($baf-run 4096 (lambda () (+ x x))))
+       'done)
+  (eq? (let ([x ($baf-big 8192)]) ($baf-run 128 (lambda () (+ x x))))
+       'not-done)
+  ; a difference of opposite signs is a sum of magnitudes
+  (eq? (let* ([x ($baf-big 8192)] [y (- x)])
+         ($baf-run 128 (lambda () (- x y))))
+       'not-done)
+  ; a sum whose fuel ends in it is still the sum
+  (let ([x ($baf-big 8192)])
+    (let loop ([e (make-engine (lambda () (+ x x)))])
+      (e 128
+         (lambda (fuel v) (eqv? v (- (expt 2 (+ (* 64 8192) 1)) 2)))
+         loop)))
+ )
+
 (mat bignum-mul-div
   ; * of exact integers against products made fourteen bits at a time
   ; with fixnums, and quotient and remainder against those products: x is
