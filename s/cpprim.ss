@@ -2802,22 +2802,20 @@
                   ,(%inline add-bigits-adx ,(address z zi) ,(address a ai)
                      ,(address b #f) ,n)))]
           [(carry-flag)
-           ;; The same chain as add-bigits, written here: the carry stays
-           ;; in the machine's carry flag from one +/carry-in to the
-           ;; next, with only moves, lea1/flags, dec/eq and dec-zero?
-           ;; between them, which every backend that has these
-           ;; instructions promises leave the flag alone; check-carry!
-           ;; holds this code to that list. Single bigits until a
-           ;; multiple of four is left, then four a step; r and q are
-           ;; the steps left of each kind, plus one. The carry out is
-           ;; taken by adding it to a zero made before the chain.
+           ;; The carry chain written here, in this language: the carry
+           ;; stays in the machine's carry flag from one +/carry-in to
+           ;; the next, with only moves, lea1/flags, dec/sign and
+           ;; dec-negative? between them, which every backend that has
+           ;; these instructions promises leave the flag alone;
+           ;; check-carry! holds this code to that list. Single bigits
+           ;; until a multiple of four is left, then four a step; r and
+           ;; q count the steps of each kind, and i the bytes left.
            (let ([za (make-tmp 'za 'uptr)] [aa (make-tmp 'aa 'uptr)]
                  [ba (make-tmp 'ba 'uptr)]
                  [i (make-assigned-tmp 'i 'uptr)]
                  [q (make-assigned-tmp 'q 'uptr)]
                  [r (make-assigned-tmp 'r 'uptr)]
                  [s (make-assigned-tmp 's 'uptr)]
-                 [c (make-assigned-tmp 'c 'uptr)]
                  [Lsingle (make-local-label 'Lsingle)]
                  [Lblock (make-local-label 'Lblock)])
              (define log2-step-bytes (fx+ 2 (constant log2-ptr-bytes)))
@@ -2830,39 +2828,40 @@
              (define (down! k)        ; not lea1: see the backend
                `(set! ,i (inline ,(make-info-lea (fx- (fx* k bigit-bytes)))
                            ,%lea1/flags ,i)))
-             ;; body, count times, for count + 1 in the variable
+             ;; body, count times; count ends below zero
              (define (repeat count L . body)
                (%seq
-                 (set! ,count ,(%inline dec/eq ,count))
-                 (if ,(%inline dec-zero? ,count)
+                 (set! ,count ,(%inline dec/sign ,count))
+                 (if ,(%inline dec-negative? ,count)
                      ,(%constant svoid)
                      (label ,L
                        ,(fold-right (lambda (e rest) `(seq ,e ,rest))
                           (%seq
-                            (set! ,count ,(%inline dec/eq ,count))
-                            (if ,(%inline dec-zero? ,count)
+                            (set! ,count ,(%inline dec/sign ,count))
+                            (if ,(%inline dec-negative? ,count)
                                 ,(%constant svoid)
                                 (goto ,L)))
                           body)))))
              (bind #t (n)
                `(let ([,za ,(address z zi)] [,aa ,(address a ai)]
-                      [,ba ,(address b #f)]
-                      [,i ,n] [,s (immediate 0)] [,c (immediate 0)]
-                      [,q ,(%inline +
-                             ,(%inline srl ,n (immediate ,log2-step-bytes))
-                             (immediate 1))]
-                      [,r ,(%inline +
-                             ,(%inline logand
-                                ,(%inline srl ,n ,(%constant log2-ptr-bytes))
-                                (immediate 3))
-                             (immediate 1))])
-                  ,(%seq
-                     ,(%inline clear-carry)
-                     ,(repeat r Lsingle (step 1) (down! 1))
-                     ,(repeat q Lblock
-                        (step 1) (step 2) (step 3) (step 4) (down! 4))
-                     (set! ,c ,(%inline +/carry-in ,c (immediate 0)))
-                     ,c))))]
+                      [,s (immediate 0)]
+                      [,q ,(%inline srl ,n (immediate ,log2-step-bytes))]
+                      [,r ,(%inline logand
+                             ,(%inline srl ,n ,(%constant log2-ptr-bytes))
+                             (immediate 3))])
+                  ;; The chain starts with the carry clear without an
+                  ;; instruction for it: the last thing before it that
+                  ;; sets the flag is b's address, an add that cannot
+                  ;; carry. The carry out is added to i, which is zero
+                  ;; when the steps are done.
+                  (let ([,i ,n]
+                        [,ba ,(%inline +/carry ,b (immediate ,data-disp))])
+                    ,(%seq
+                       ,(repeat r Lsingle (step 1) (down! 1))
+                       ,(repeat q Lblock
+                          (step 1) (step 2) (step 3) (step 4) (down! 4))
+                       (set! ,i ,(%inline +/carry-in ,i (immediate 0)))
+                       ,i)))))]
           [else
             (let ([i (make-assigned-tmp 'i 'uptr)]
                   [c (make-assigned-tmp 'c 'uptr)]

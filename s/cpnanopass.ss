@@ -8972,17 +8972,17 @@
       ;; The carry flag between instructions. Some primitives take the
       ;; machine's carry flag in: +/carry-in, and a condition-code test
       ;; of carry. It must reach them from the primitive that set it
-      ;; (clear-carry, +/carry, +/carry-in) along every path. A backend
-      ;; that has these promises that what it emits for a move, for
-      ;; lea1/flags, and for dec/eq and dec-zero? leaves the flag alone,
-      ;; and that so does the code the register allocator adds (moves).
-      ;; This holds the compiler's own code to the other half: nothing
-      ;; else may stand between a setter and a taker. So a carry chain
-      ;; can be a loop in this language. Not on the list: a move of the
+      ;; (+/carry, +/carry-in) along every path. A backend that has
+      ;; these promises that what it emits for a move, for lea1/flags,
+      ;; and for dec/sign and dec-negative? leaves the flag alone, and
+      ;; that so does the code the register allocator adds (moves). This
+      ;; holds the compiler's own code to the other half: nothing else
+      ;; may stand between a setter and a taker. So a carry chain can be
+      ;; a loop in this language. Not on the list: a move of the
       ;; constant 0 (x86 clears a register with xor), and lea1 and lea2
-      ;; (x86_64 makes them an add when it can). dec-zero? has a rule of
-      ;; its own: it comes right after the dec/eq of the variable it
-      ;; names.
+      ;; (x86_64 makes them an add when it can). dec-negative? has a
+      ;; rule of its own: it comes right after the dec/sign of the
+      ;; variable it names.
       (define-who check-carry!
         (lambda (name block*)
           (define live-in (make-eq-hashtable))
@@ -9020,7 +9020,7 @@
                        [(eq? value-prim %+/carry-in) (set! taker? #t) #t]
                        [(eq? value-prim %+/carry) #f]
                        [(or (eq? value-prim %lea1/flags)
-                            (eq? value-prim %dec/eq))
+                            (eq? value-prim %dec/sign))
                         live?]
                        [else (lost live? value-prim)])]
                     [(immediate ,imm) (guard (eqv? imm 0))
@@ -9031,9 +9031,7 @@
                   (nanopass-case (L15a Effect) e
                     [(set! ,live-info ,lvalue ,rhs) (Rhs live? rhs)]
                     [(inline ,live-info ,info ,effect-prim ,t* ...)
-                     (if (eq? effect-prim %clear-carry)
-                         #f
-                         (lost live? effect-prim))]
+                     (lost live? effect-prim)]
                     [(check-live ,live-info ,reg* ...) live?]
                     [else (lost live? 'effect)])))
               (define dec-of?
@@ -9041,7 +9039,7 @@
                   (nanopass-case (L15a Effect) e
                     [(set! ,live-info ,lvalue
                        (inline ,info ,value-prim ,t* ...))
-                     (and (eq? value-prim %dec/eq) (eq? lvalue t))]
+                     (and (eq? value-prim %dec/sign) (eq? lvalue t))]
                     [else #f])))
               (define Pred
                 (lambda (live? p effect*)
@@ -9052,12 +9050,12 @@
                              (eq? (info-condition-code-type info) 'carry))
                         (set! taker? #t)
                         #t]
-                       [(eq? pred-prim %dec-zero?)
+                       [(eq? pred-prim %dec-negative?)
                         (when check?
                           (unless (and (pair? effect*)
                                        (dec-of? (car effect*) (car t*)))
                             (sorry! who
-                              "in ~a, dec-zero? does not follow its dec/eq"
+                              "in ~a, dec-negative? is not after its dec/sign"
                               name)))
                         live?]
                        [else (lost live? pred-prim)])])))

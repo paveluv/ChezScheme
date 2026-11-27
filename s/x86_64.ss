@@ -500,7 +500,6 @@
      `(set! ,(make-live-info) ,z
         (asm ,info ,(asm-lea1/flags (info-lea-offset info)) ,x))])
 
-  ;;
   ;; (+/carry-in x y): x + y + carry, and the carry out in the flag
   (define-instruction value (+/carry-in)
     [(op (z mem) (x z) (y ur imm32))
@@ -514,9 +513,9 @@
          `(set! ,(make-live-info) ,t (asm ,info ,asm-add-carry ,t ,y))
          `(set! ,(make-live-info) ,z ,t)))])
 
-  ;; (dec/eq x): x - 1, setting the condition that (dec-zero? x) tests
-  ;; when it comes next, and leaving the carry
-  (define-instruction value (dec/eq)
+  ;; (dec/sign x): x - 1, setting the condition that (dec-negative? x)
+  ;; tests when it comes next, and leaving the carry
+  (define-instruction value (dec/sign)
     [(op (z mem) (x z))
      `(set! ,(make-live-info) ,z (asm ,info ,asm-dec ,z))]
     [(op (z ur) (x z))
@@ -528,16 +527,14 @@
          `(set! ,(make-live-info) ,t (asm ,info ,asm-dec ,t))
          `(set! ,(make-live-info) ,z ,t)))])
 
-  ;; (dec-zero? x): whether x, which dec/eq has just set, is zero. Here
-  ;; that is ZF as dec left it (a move in between does not change it);
-  ;; a machine whose decrement sets no flag would test x itself.
-  (define-instruction pred (dec-zero?)
+  ;; (dec-negative? x): whether x, which dec/sign has just set, is below
+  ;; zero. Here that is SF and OF as dec left them (jl; a move in
+  ;; between does not change them); a machine whose decrement sets no
+  ;; flag would test the sign bit of x itself.
+  (define-instruction pred (dec-negative?)
     [(op (x ur mem))
-     (let ([info (make-info-condition-code 'eq? #f #t)])
+     (let ([info (make-info-condition-code '< #f #t)])
        (values '() `(asm ,info ,(asm-condition-code info))))])
-
-  (define-instruction effect (clear-carry)
-    [(op) `(asm ,info ,asm-clear-carry)])
 
   ;; (add-bigits zb xb yb n): the sum of two runs of n bigits, n > 0, into
   ;; a third, and its carry out; zb, xb and yb address the most
@@ -1099,7 +1096,7 @@
                      asm-indirect-call asm-condition-code
                      asm-fl-cvt asm-store-single asm-load-single asm-fpt asm-fptrunc asm-div asm-popcount
                      asm-add-bigits asm-add-bigits-adx
-                     asm-add-carry asm-dec asm-clear-carry asm-lea1/flags
+                     asm-add-carry asm-dec asm-lea1/flags
                      asm-exchange asm-pause asm-debug asm-locked-incr asm-locked-decr asm-locked-cmpxchg
                      asm-fpsqrt asm-fpround asm-fpfma asm-fpop-2 asm-fpminmax asm-fpmove asm-fpmove128 asm-fpcast asm-fpsingle
                      asm-c-simple-call
@@ -1234,7 +1231,6 @@
 
   #;(define-op nop       byte-op    #b10010000)
   (define-op ret       byte-op    #b11000011)
-  (define-op clc       byte-op    #b11111000)
   (define-op extad quad-byte-op   #b10011001) ; extend rax to rdx
 
   (define-op rdtsc     two-byte-op     #b1111 #b00110001) ; read time-stamp counter
@@ -2478,10 +2474,6 @@
       (Trivit (dest)
         (safe-assert (equal? (Triv->rand src) dest))
         (emit dec dest code*))))
-
-  (define asm-clear-carry
-    (lambda (code*)
-      (emit clc code*)))
 
   (define asm-lea1/flags
     (lambda (offset)
