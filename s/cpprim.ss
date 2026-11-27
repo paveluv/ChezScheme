@@ -2755,8 +2755,9 @@
     ;; from the leading bigits, makes the result there, and carries into
     ;; and copies the bigits of the longer operand above the shorter's.
     ;; Under it, build-add-bigits adds the run of bigits the two share,
-    ;; with the machine's add-bigits instruction where it has one, else
-    ;; with a loop given here. Bigits are most significant first, and
+    ;; by a loop that keeps the carry in the machine's carry flag where
+    ;; the backend has the instructions for that, else by one that
+    ;; keeps it in a register. Bigits are most significant first, and
     ;; lengths and indexes are in bytes.
     (let ()
       (define bigit-bytes (constant bigit-bytes))
@@ -2773,34 +2774,21 @@
            (immediate ,data-disp) ,e-val))
       (define (carry? e) `(if ,e (immediate 1) (immediate 0)))
       ;; the loops a machine has for build-add-bigits, the first its
-      ;; default; adx is for x86_64 machines with ADX, which the caller
-      ;; knows
+      ;; default: carry-flag where the backend has the instructions
+      ;; that keep the carry in the machine's flag, and generic, with
+      ;; the carry in a register, anywhere
       (define machine-loops
         (constant-case architecture
-          [(x86_64) '(adc adx carry-flag generic)]
+          [(x86_64) '(carry-flag generic)]
           [else '(generic)]))
-      ;; from this many bytes of bigits, add-bigits-adx is the faster
-      (define adx-from (fx* 16 bigit-bytes))
       ;; the n bytes of bigits of z from zi are those of a from ai plus
       ;; those of b from 0; n > 0; the value is the carry out
       (define (build-add-bigits loop z zi a ai b n)
         ;; addresses, not objects: nothing allocates between here and
-        ;; the end of the instruction
-        (define (address e-big e-index)   ; e-index #f: the first bigit
-          (if e-index
-              (%inline + ,e-big ,(%inline + ,e-index (immediate ,data-disp)))
-              (%inline + ,e-big (immediate ,data-disp))))
+        ;; the end of the loop
+        (define (address e-big e-index)
+          (%inline + ,e-big ,(%inline + ,e-index (immediate ,data-disp))))
         (case loop
-          [(adc)
-           (%inline add-bigits ,(address z zi) ,(address a ai)
-              ,(address b #f) ,n)]
-          [(adx)
-           (bind #t (n)
-             `(if ,(%inline u< ,n (immediate ,adx-from))
-                  ,(%inline add-bigits ,(address z zi) ,(address a ai)
-                     ,(address b #f) ,n)
-                  ,(%inline add-bigits-adx ,(address z zi) ,(address a ai)
-                     ,(address b #f) ,n)))]
           [(carry-flag)
            ;; The carry chain written here, in this language: the carry
            ;; stays in the machine's carry flag from one +/carry-in to

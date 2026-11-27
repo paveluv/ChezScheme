@@ -85,23 +85,16 @@
 (define-syntax words-as-bigits?
   (lambda (x) (= (constant bigit-bits) (constant ptr-bits))))
 ;; (big-add-magnitudes x y kernel): |x| + |y| with the sign of x, for
-;; bignums x and y, by the compiler's code with the machine's fastest
-;; loop, or by the kernel's expression. A machine whose backend has no
-;; loop of its own gets the compiler's machine-independent one, which
-;; keeps the carry in a register and beats the kernel only on short
+;; bignums x and y, by the compiler's code with the machine's loop, or
+;; by the kernel's expression. A machine whose backend has not the
+;; instructions that keep the carry in a flag gets the compiler's loop
+;; with the carry in a register, which beats the kernel only on short
 ;; operands; pb keeps the kernel.
-(define bignum-adx?
-  (constant-case architecture
-    [(x86_64) ((foreign-procedure "(cs)s_x86_64_adx" () boolean))]
-    [else #f]))
 (define-syntax big-add-magnitudes
   (syntax-rules ()
     [(_ x y kernel)
      (constant-case architecture
-       [(x86_64)
-        (if bignum-adx?
-            (#3%$bignum-add-magnitudes x y 'adx)
-            (#3%$bignum-add-magnitudes x y))]
+       [(x86_64) (#3%$bignum-add-magnitudes x y)]
        [(pb) kernel]
        [else
         (if (and (fx< ($bignum-length x) 8) (fx< ($bignum-length y) 8))

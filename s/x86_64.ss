@@ -536,40 +536,6 @@
      (let ([info (make-info-condition-code '< #f #t)])
        (values '() `(asm ,info ,(asm-condition-code info))))])
 
-  ;; (add-bigits zb xb yb n): the sum of two runs of n bigits, n > 0, into
-  ;; a third, and its carry out; zb, xb and yb address the most
-  ;; significant bigit of each run, and n is in bytes. The loop changes
-  ;; only its count, which is also the result, and three scratch
-  ;; registers, so the bases may be the same register.
-  (define-instruction value (add-bigits)
-    [(op (z ur) (zb ur) (xb ur) (yb ur) (n ur))
-     (let ([i (make-tmp 'i)] [s (make-tmp 's)] [r (make-tmp 'r)]
-           [q (make-tmp 'q)])
-       (seq
-         `(set! ,(make-live-info) ,i ,n)
-         `(set! ,(make-live-info) ,s (asm ,null-info ,asm-kill))
-         `(set! ,(make-live-info) ,r (asm ,null-info ,asm-kill))
-         `(set! ,(make-live-info) ,q (asm ,null-info ,asm-kill))
-         `(set! ,(make-live-info) ,i
-            (asm ,info ,asm-add-bigits ,i ,zb ,xb ,yb ,s ,r ,q))
-         `(set! ,(make-live-info) ,z ,i)))])
-
-  ;; (add-bigits-adx zb xb yb n): add-bigits with two carry chains, for
-  ;; machines with ADX; %rcx is the upper chain's index, for jrcxz
-  (define-instruction value (add-bigits-adx)
-    [(op (z ur) (zb ur) (xb ur) (yb ur) (n ur))
-     (let ([i (make-tmp 'i)] [s (make-tmp 's)] [t (make-tmp 't)]
-           [r (make-tmp 'r)] [urcx (make-precolored-unspillable 'urcx %rcx)])
-       (seq
-         `(set! ,(make-live-info) ,i ,n)
-         `(set! ,(make-live-info) ,s (asm ,null-info ,asm-kill))
-         `(set! ,(make-live-info) ,t (asm ,null-info ,asm-kill))
-         `(set! ,(make-live-info) ,r (asm ,null-info ,asm-kill))
-         `(set! ,(make-live-info) ,urcx (asm ,null-info ,asm-kill))
-         `(set! ,(make-live-info) ,i
-            (asm ,info ,asm-add-bigits-adx ,i ,zb ,xb ,yb ,s ,t ,r ,urcx))
-         `(set! ,(make-live-info) ,z ,i)))])
-
   (define-instruction value (* */ovfl) ; */ovfl must set multiply-overflow flag on overflow
     [(op (z ur) (x z) (y ur mem))
      `(set! ,(make-live-info) ,z (asm ,info ,asm-mul ,z ,y))]
@@ -1095,7 +1061,6 @@
                      asm-lea1 asm-lea2 asm-select asm-select-bit
                      asm-indirect-call asm-condition-code
                      asm-fl-cvt asm-store-single asm-load-single asm-fpt asm-fptrunc asm-div asm-popcount
-                     asm-add-bigits asm-add-bigits-adx
                      asm-add-carry asm-dec asm-lea1/flags
                      asm-exchange asm-pause asm-debug asm-locked-incr asm-locked-decr asm-locked-cmpxchg
                      asm-fpsqrt asm-fpround asm-fpfma asm-fpop-2 asm-fpminmax asm-fpmove asm-fpmove128 asm-fpcast asm-fpsingle
@@ -1205,8 +1170,6 @@
   (define-op add  (#;b *) binary-op #b000000)
   (define-op adc  (*) binary-op #b000100)
   (define-op adci (*) addi-op   #b100000 #b010)
-  (define-op adcx adx-op #x66) ; add with carry in CF only
-  (define-op adox adx-op #xF3) ; add with carry in OF only
   (define-op or   (#;b *) binary-op #b000010)
   (define-op and  (#;b *) binary-op #b001000)
   (define-op sub  (#;b *) binary-op #b001010)
@@ -1268,9 +1231,6 @@
   (define-op bvc branch-op #b0001) ; jump on not overflow
   (define-op bcs branch-op #b0010) ; jump on below (carry set)
   (define-op bcc branch-op #b0011) ; jump on not below (carry clear)
-  (define-op bmi branch-op #b1000) ; jump on sign
-  (define-op jrcxz jrcxz-op)       ; jump on %rcx zero, changing no flag
-  (define-op bpl branch-op #b1001) ; jump on not sign
   (define-op beq branch-op #b0100) ; jump on equal
   (define-op bne branch-op #b0101) ; jump on not equal
   (define-op bls branch-op #b0110) ; jump on less or same (below or equal)
@@ -1653,31 +1613,6 @@
         (ax-ea-modrm-reg source dest)
         (ax-ea-sib source)
         (ax-ea-addr-disp source))))
-
-  (define adx-op
-    ;; adcx or adox source, dest (64-bit); the destination is in the modrm
-    ;; reg field, and the prefix comes before REX
-    (lambda (op prefix source dest code*)
-      (emit-code (op source dest code*)
-        (build byte prefix)
-        (ax-ea-rex 1 source dest 'quad)
-        (build byte #x0F)
-        (build byte #x38)
-        (build byte #xF6)
-        (ax-ea-modrm-reg source dest)
-        (ax-ea-sib source)
-        (ax-ea-addr-disp source))))
-
-  (define jrcxz-op
-    (lambda (op disp code*)
-      (record-case disp
-        [(label) (offset l)
-         (unless (and (fixnum? offset) (fx<= -128 offset 127))
-           ($oops 'assembler-internal "jrcxz offset ~s" offset))
-         (emit-code (op disp code*)
-           (build byte #xE3)
-           (build byte offset))]
-        [else ($oops 'assembler-internal "jrcxz disp ~s" disp)])))
 
   (define setcc-op
     ;; setcc dest, which sets only the low byte of dest
@@ -2480,136 +2415,6 @@
       (lambda (code* dest src)
         (Trivit (dest)
           (emit lea `(disp ,offset ,src) dest code*)))))
-
-  ;; The loop of add-bigits. The carry stays in CF from one `adc` to the
-  ;; next: between them come only `mov`, `lea`, `dec` and branches on ZF
-  ;; or SF. Single bigits until a multiple of four is left, then four at
-  ;; a time; `i` counts down in bytes to 0, and then takes the carry.
-  (define asm-add-bigits
-    (lambda (code* dest i zb xb yb s r q)
-      (Trivit (dest i zb xb yb s r q)
-        (safe-assert (equal? dest i))
-        (let ([ir (cdr i)] [l (make-local-label 'Ladd)])
-          (define (at base disp) `(index ,disp ,ir ,(cdr base)))
-          (define (step disp code*)
-            (emit mov (at xb disp) s
-              (emit adc (at yb disp) s
-                (emit mov s (at zb disp) code*))))
-          (define (back body)        ; to the start of body, from its end
-            (let ([n (asm-size* body)])
-              `(label ,(if (fx<= (fx+ n 2) 128) (fx- (fx+ n 2)) (fx- (fx+ n 6)))
-                 ,l)))
-          (define (over body) `(label ,(asm-size* body) ,l))
-          (let* ([done (emit setcc 'b i code*)]
-                 [block (step -8 (step -16 (step -24 (step -32
-                          (emit lea `(disp -32 ,ir) i
-                            (emit dec q '()))))))]
-                 [blocks (emit dec q
-                           (let ([loop (append block
-                                         (emit bpl (back block) '()))])
-                             (emit bmi (over loop) (append loop done))))]
-                 [single (step -8
-                           (emit lea `(disp -8 ,ir) i
-                             (emit dec r '())))]
-                 [singles (append single (emit bne (back single) '()))])
-            (emit mov i q
-              (emit lsri '(imm 5) q
-                (emit mov i r
-                  (emit lsri '(imm 3) r
-                    (emit andi '(imm 3) r
-                      (emit beq (over singles)
-                        (append singles blocks))))))))))))
-
-  ;; The loop of add-bigits-adx. The n mod 8 least significant bigits go
-  ;; first, by one chain in CF; then the rest is two halves added at the
-  ;; same time, the lower by adcx (CF) and the upper by adox (OF), four
-  ;; bigits of each a step, the lower at `i` and the upper at %rcx, the
-  ;; loop kept by lea and jrcxz, which change no flag; then the lower
-  ;; half's carry goes into the upper half as far as it travels, and `i`
-  ;; takes the carry out. OF is 0 when the halves start: the single
-  ;; chain's last `dec` takes its count from 1 to 0, or `test` cleared it.
-  (define asm-add-bigits-adx
-    (lambda (code* dest i zb xb yb s t r rcx)
-      (Trivit (dest i zb xb yb s t r rcx)
-        (safe-assert (equal? dest i))
-        (let ([ir (cdr i)] [jr (cdr rcx)] [l (make-local-label 'Ladd)])
-          (define (at base index disp) `(index ,disp ,index ,(cdr base)))
-          (define (to n) `(label ,n ,l))
-          (define (back n short long) ; to n bytes before a branch
-            (if (fx<= (fx+ n short) 128)
-                (fx- (fx+ n short))
-                (fx- (fx+ n long))))
-          (define (step disp)         ; the single chain
-            (append (emit mov (at xb ir disp) s '())
-                    (emit adc (at yb ir disp) s '())
-                    (emit mov s (at zb ir disp) '())))
-          (define (step2 disp)        ; both chains
-            (append (emit mov (at xb ir disp) s '())
-                    (emit adcx (at yb ir disp) s '())
-                    (emit mov s (at zb ir disp) '())
-                    (emit mov (at xb jr disp) t '())
-                    (emit adox (at yb jr disp) t '())
-                    (emit mov t (at zb jr disp) '())))
-          (let* ([single (append (step -8)
-                                 (emit lea `(disp -8 ,ir) i '())
-                                 (emit dec r '()))]
-                 [singles (append single
-                            (emit bne (to (back (asm-size* single) 2 6)) '()))]
-                 ;; the lower half's carry into the upper half
-                 [out (emit movi '(imm 1) t '())]
-                 [finish (emit mov t i '())]
-                 [adci (emit adci '(imm 0) (at zb jr -8) '())]
-                 [leaj (emit lea `(disp -8 ,jr) rcx '())]
-                 [bra-prop (emit bra
-                             (to (back (fx+ (asm-size* adci) 2
-                                         (asm-size* leaj) 2)
-                                   2 5))
-                             '())]
-                 [jrcxz-out (emit jrcxz (to (asm-size* bra-prop)) '())]
-                 [bcc-prop (emit bcc
-                             (to (fx+ (asm-size* leaj) (asm-size* jrcxz-out)
-                                   (asm-size* bra-prop) (asm-size* out)))
-                             '())]
-                 [prop (append adci bcc-prop leaj jrcxz-out bra-prop)]
-                 [movrcx (emit mov i rcx '())]
-                 [merge (append (emit movi '(imm 0) t '())
-                                (emit setcc 'o t '())
-                                (emit bcc
-                                  (to (fx+ (asm-size* movrcx) (asm-size* prop)
-                                        (asm-size* out)))
-                                  '())
-                                movrcx prop out finish)]
-                 ;; the two chains
-                 [body (append (step2 -8) (step2 -16) (step2 -24) (step2 -32)
-                               (emit lea `(disp -32 ,ir) i '())
-                               (emit lea `(disp -32 ,jr) rcx '()))]
-                 [bra-dual (emit bra (to (back (fx+ (asm-size* body) 2) 2 5))
-                             '())]
-                 [dual (append body (emit jrcxz (to (asm-size* bra-dual)) '())
-                               bra-dual)]
-                 ;; fewer than 8 bigits: all went by the single chain
-                 [short (append (emit setcc 'b i '())
-                                (emit bra
-                                  (to (fx+ (asm-size* dual) (asm-size* merge)))
-                                  '()))]
-                 [bra-dual0 (emit bra (to (asm-size* short)) '())])
-            (safe-assert (fx= (asm-size* bcc-prop) 2))
-            (append
-              (emit mov i r '())
-              (emit lsri '(imm 3) r '())
-              (emit andi '(imm 7) r '())
-              (emit mov i rcx '())
-              (emit andi '(imm -64) rcx '())
-              (emit lsri '(imm 1) rcx '())
-              (emit test r r '())          ; CF = OF = 0
-              (emit beq (to (asm-size* singles)) '())
-              singles
-              (emit jrcxz (to (asm-size* bra-dual0)) '())
-              bra-dual0
-              short
-              dual
-              merge
-              code*))))))
 
   (define-who asm-addop
     (lambda (op)

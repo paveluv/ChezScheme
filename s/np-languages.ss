@@ -718,8 +718,6 @@
   (declare-primitive +/carry-in value #f) ; x86_64 only so far
   (declare-primitive dec/sign value #f) ; x86_64 only so far
   (declare-primitive lea1/flags value #t) ; x86_64 only so far
-  (declare-primitive add-bigits value #f) ; x86_64 only, writes memory
-  (declare-primitive add-bigits-adx value #f) ; same, with ADX
   (declare-primitive -/ovfl value #f)
   (declare-primitive -/eq value #f)
   (declare-primitive -/pos value #f)

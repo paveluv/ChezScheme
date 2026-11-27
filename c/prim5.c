@@ -30,7 +30,6 @@
 /* locally defined functions */
 static INT s_errno(void);
 static IBOOL s_addr_in_heap(uptr x);
-static IBOOL s_x86_64_adx(void);
 static IBOOL s_ptr_in_heap(ptr x);
 static ptr s_generation(ptr x);
 static iptr s_fxmul(iptr x, iptr y);
@@ -175,20 +174,6 @@ static INT s_errno(void) {
 
 static IBOOL s_addr_in_heap(uptr x) {
   return MaybeSegInfo(addr_get_segment(x)) != NULL;
-}
-
-/* whether the machine has ADX (adcx and adox), for the sums of bignums
-   that the x86_64 backend makes with two carry chains */
-#if defined(X86_64) && defined(__GNUC__)
-#include <cpuid.h>
-#endif
-static IBOOL s_x86_64_adx(void) {
-#if defined(X86_64) && defined(__GNUC__)
-  unsigned int a, b, c, d;
-  return __get_cpuid_count(7, 0, &a, &b, &c, &d) && (b & (1u << 19)) != 0;
-#else
-  return 0;
-#endif
 }
 
 static IBOOL s_ptr_in_heap(ptr x) {
@@ -1886,7 +1871,6 @@ void S_prim5_init(void) {
     Sforeign_symbol("(cs)fxdiv", (void *)s_fxdiv);
     Sforeign_symbol("(cs)s_big_negate", (void *)S_big_negate);
     Sforeign_symbol("(cs)add", (void *)S_add);
-    Sforeign_symbol("(cs)s_x86_64_adx", (void *)s_x86_64_adx);
     Sforeign_symbol("(cs)gcd", (void *)S_gcd);
     Sforeign_symbol("(cs)mul", (void *)S_mul);
     Sforeign_symbol("(cs)s_ash", (void *)S_ash);

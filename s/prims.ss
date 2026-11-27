@@ -1385,9 +1385,8 @@
     (#3%$bignum-length n)))
 
 (define-who $bignum-add-magnitudes
-  ;; loop: one of the machine's loops for the compiler's sums: adc, adx
-  ;; (only where the machine has it) or carry-flag on x86_64, and generic
-  ;; anywhere
+  ;; loop: one of the machine's loops for the compiler's sums:
+  ;; carry-flag on x86_64, and generic anywhere
   (case-lambda
     [(x y)
      (unless (bignum? x) ($oops who "~s is not a bignum" x))
@@ -1406,8 +1405,6 @@
         (constant-case architecture
           [(x86_64)
            (case loop
-             [(adc) (#3%$bignum-add-magnitudes x y 'adc)]
-             [(adx) (#3%$bignum-add-magnitudes x y 'adx)]
              [(carry-flag) (#3%$bignum-add-magnitudes x y 'carry-flag)]
              [else ($oops who "~s is not a loop of this machine" loop)])]
           [else ($oops who "~s is not a loop of this machine" loop)])])]))
