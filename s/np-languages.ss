@@ -657,6 +657,7 @@
   (declare-primitive c-simple-call effect #f)
   (declare-primitive c-simple-return effect #f)
   (declare-primitive check-stack-align effect #f) ; x86
+  (declare-primitive clear-carry effect #f) ; x86_64 only so far
   (declare-primitive deactivate-thread effect #f) ; threaded version only
   (declare-primitive debug effect #f) ; x86_64 and arm64
   (declare-primitive fldl effect #f) ; x86
@@ -699,6 +700,7 @@
   (declare-primitive > pred #t)
   (declare-primitive >= pred #t)
   (declare-primitive condition-code pred #t)
+  (declare-primitive dec-zero? pred #t) ; x86_64 only so far
   (declare-primitive eq? pred #t)
   (declare-primitive fp< pred #t)
   (declare-primitive fp<= pred #t)
@@ -714,6 +716,9 @@
   (declare-primitive + value #t)
   (declare-primitive +/ovfl value #f)
   (declare-primitive +/carry value #f)
+  (declare-primitive +/carry-in value #f) ; x86_64 only so far
+  (declare-primitive dec/eq value #f) ; x86_64 only so far
+  (declare-primitive lea1/flags value #t) ; x86_64 only so far
   (declare-primitive add-bigits value #f) ; x86_64 only, writes memory
   (declare-primitive add-bigits-adx value #f) ; same, with ADX
   (declare-primitive -/ovfl value #f)

@@ -8969,6 +8969,121 @@
             [(2) (fxodd? n)]
             [(1) #t])))
 
+      ;; The carry flag between instructions. Some primitives take the
+      ;; machine's carry flag in: +/carry-in, and a condition-code test
+      ;; of carry. It must reach them from the primitive that set it
+      ;; (clear-carry, +/carry, +/carry-in) along every path. A backend
+      ;; that has these promises that what it emits for a move, for
+      ;; lea1/flags, and for dec/eq and dec-zero? leaves the flag alone,
+      ;; and that so does the code the register allocator adds (moves).
+      ;; This holds the compiler's own code to the other half: nothing
+      ;; else may stand between a setter and a taker. So a carry chain
+      ;; can be a loop in this language. Not on the list: a move of the
+      ;; constant 0 (x86 clears a register with xor), and lea1 and lea2
+      ;; (x86_64 makes them an add when it can). dec-zero? has a rule of
+      ;; its own: it comes right after the dec/eq of the variable it
+      ;; names.
+      (define-who check-carry!
+        (lambda (name block*)
+          (define live-in (make-eq-hashtable))
+          (define taker? #f)
+          (define in? (lambda (block) (eq-hashtable-ref live-in block #f)))
+          (define out?
+            (lambda (block)
+              (cond
+                [(goto-block? block) (in? (goto-block-next block))]
+                [(joto-block? block) (in? (joto-block-next block))]
+                [(if-block? block)
+                 (or (in? (if-block-true block)) (in? (if-block-false block)))]
+                [(newframe-block? block)
+                 (or (in? (newframe-block-next block))
+                     (let ([rp (newframe-block-rp block)]) (and rp (in? rp)))
+                     (let ([rp* (newframe-block-rp* block)])
+                       (and rp* (ormap in? rp*))))]
+                [else #f])))
+          ;; whether the carry is wanted before the block, given that it
+          ;; is wanted after it or not; with check?, complains of what
+          ;; would lose it
+          (define scan
+            (lambda (block live? check?)
+              (define lost
+                (lambda (live? what)
+                  (when (and live? check?)
+                    (sorry! who "in ~a, the carry flag does not survive ~s"
+                      name what))
+                  #f))
+              (define Rhs
+                (lambda (live? rhs)
+                  (nanopass-case (L15a Rhs) rhs
+                    [(inline ,info ,value-prim ,t* ...)
+                     (cond
+                       [(eq? value-prim %+/carry-in) (set! taker? #t) #t]
+                       [(eq? value-prim %+/carry) #f]
+                       [(or (eq? value-prim %lea1/flags)
+                            (eq? value-prim %dec/eq))
+                        live?]
+                       [else (lost live? value-prim)])]
+                    [(immediate ,imm) (guard (eqv? imm 0))
+                     (lost live? '(immediate 0))]
+                    [else live?])))
+              (define Effect
+                (lambda (live? e)
+                  (nanopass-case (L15a Effect) e
+                    [(set! ,live-info ,lvalue ,rhs) (Rhs live? rhs)]
+                    [(inline ,live-info ,info ,effect-prim ,t* ...)
+                     (if (eq? effect-prim %clear-carry)
+                         #f
+                         (lost live? effect-prim))]
+                    [(check-live ,live-info ,reg* ...) live?]
+                    [else (lost live? 'effect)])))
+              (define dec-of?
+                (lambda (e t)
+                  (nanopass-case (L15a Effect) e
+                    [(set! ,live-info ,lvalue
+                       (inline ,info ,value-prim ,t* ...))
+                     (and (eq? value-prim %dec/eq) (eq? lvalue t))]
+                    [else #f])))
+              (define Pred
+                (lambda (live? p effect*)
+                  (nanopass-case (L15a Pred) p
+                    [(inline ,live-info ,info ,pred-prim ,t* ...)
+                     (cond
+                       [(and (eq? pred-prim %condition-code)
+                             (eq? (info-condition-code-type info) 'carry))
+                        (set! taker? #t)
+                        #t]
+                       [(eq? pred-prim %dec-zero?)
+                        (when check?
+                          (unless (and (pair? effect*)
+                                       (dec-of? (car effect*) (car t*)))
+                            (sorry! who
+                              "in ~a, dec-zero? does not follow its dec/eq"
+                              name)))
+                        live?]
+                       [else (lost live? pred-prim)])])))
+              ;; a block's effects are kept in the order of execution
+              (let ([effect* (reverse (block-effect* block))])
+                (fold-left Effect
+                  (cond
+                    [(if-block? block)
+                     (Pred live? (if-block-pred block) effect*)]
+                    [(tail-block? block) (lost live? 'tail)]
+                    [else live?])
+                  effect*))))
+          ;; to a fixed point, then once more to complain; most code has
+          ;; no taker and is done after the first round
+          (let loop ()
+            (let ([changed? #f])
+              (for-each
+                (lambda (block)
+                  (when (and (scan block (out? block) #f) (not (in? block)))
+                    (eq-hashtable-set! live-in block #t)
+                    (set! changed? #t)))
+                block*)
+              (when changed? (loop))))
+          (when taker?
+            (for-each (lambda (block) (scan block (out? block) #t)) block*))))
+
       (define do-live-analysis!
         (lambda (live-size entry-block* reg-spillinfo)
           (define add-var (make-add-var live-size reg-spillinfo))
@@ -10841,6 +10956,9 @@
                  (do ([i 0 (fx+ i 1)]) ((fx= i kfv)) (let ([fv (get-fv i)] [i (fx+ i kspillable)]) (var-index-set! fv i) (vector-set! varvec i fv)))
                  (do ([i 0 (fx+ i 1)]) ((fx= i kreg)) (let ([reg (vector-ref regvec i)] [i (fx+ i kspillable kfv)]) (var-index-set! reg reg-spillinfo i) (vector-set! varvec i reg)))
                  (with-live-info-record-writer live-size varvec
+                   ; see that the carry flag survives where it is used
+                   (RApass unparse-L15a check-carry!
+                     (info-lambda-name info) block*)
                    ; run intra/inter-block live analysis
                    (RApass unparse-L15a do-live-analysis! live-size entry-block* reg-spillinfo)
                    ; this is worth enabling from time to time...
